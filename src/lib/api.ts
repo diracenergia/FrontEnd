@@ -81,15 +81,21 @@ export function telemetryWsUrl(params: { apiKey?: string; deviceId?: string } = 
   const apiKey = params.apiKey ?? API_KEY ?? "";
   const deviceId = params.deviceId ?? "web-ui";
 
-  // Si el valor es un ws:// o wss:// completo, lo usamos tal cual y le anexamos query
+  // Si viene un ws:// o wss:// completo en env...
   if (isAbsWsUrl(WS_BASE_OR_ENDPOINT)) {
     const url = new URL(WS_BASE_OR_ENDPOINT);
+
+    // 🩹 Si no trae path, forzamos /ws/telemetry
+    if (!url.pathname || url.pathname === "/") {
+      url.pathname = "/ws/telemetry";
+    }
+
     url.searchParams.set("api_key", apiKey);
     url.searchParams.set("device_id", deviceId);
     return url.toString();
   }
 
-  // Si no es absoluto, asumimos que es base y agregamos el endpoint
+  // Si es base (no absoluta), derivamos desde la base y completamos el endpoint
   const base = WS_BASE_OR_ENDPOINT || wsFromHttpBase(API);
   const sep = base.endsWith("/") ? "" : "/";
   const u = new URL(`${base}${sep}ws/telemetry`);
@@ -97,6 +103,7 @@ export function telemetryWsUrl(params: { apiKey?: string; deviceId?: string } = 
   u.searchParams.set("device_id", deviceId);
   return u.toString();
 }
+
 
 /* ========= Headers comunes ========= */
 
