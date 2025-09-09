@@ -8,3 +8,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <AppRoot />
   </React.StrictMode>
 );
+
+import { getApiBase, telemetryWsUrl, getApiKey } from "./lib/api";
+
+console.log("[CFG]", {
+  apiBase: getApiBase(),
+  wsUrl: telemetryWsUrl(),
+  apiKeySet: !!getApiKey(),
+});
