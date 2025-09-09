@@ -4,17 +4,12 @@
 
 const ENV = (import.meta as any)?.env ?? {};
 
-// Base por defecto: .env -> window.location.origin -> fallback local
-const DEFAULT_API: string =
-  (ENV.VITE_API_URL as string | undefined) ??
-  (typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:8000");
-
-// Saca trailing slashes
+// Quita trailing slashes
 function trimSlash(s: string) {
   return String(s || "").replace(/\/+$/, "");
 }
 
-// Carga/salva localStorage de forma segura (evita errores en SSR/tests)
+// Helpers localStorage (seguros)
 function lsGet(key: string, fallback = ""): string {
   try {
     const v = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
@@ -26,13 +21,39 @@ function lsGet(key: string, fallback = ""): string {
 function lsSet(key: string, val: string) {
   try {
     if (typeof localStorage !== "undefined") localStorage.setItem(key, val);
-  } catch {/* ignore */}
+  } catch { /* ignore */ }
+}
+function lsDel(key: string) {
+  try {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(key);
+  } catch { /* ignore */ }
 }
 
-// API base (persistente)
-let API = trimSlash(lsGet("apiBase", DEFAULT_API));
+// 1) API por env (si existe) y default local
+const ENV_API: string = trimSlash((ENV.VITE_API_URL as string | undefined) ?? "");
+const DEFAULT_API = "http://127.0.0.1:8000";
 
-// API key (prioriza .env, luego localStorage, luego default de desarrollo)
+// 2) Lee lo guardado, pero SOLO si no hay env explícita
+let savedApi = lsGet("apiBase", "");
+
+// 3) Sanea: si lo guardado no parece URL absoluta, ignóralo
+if (savedApi && !/^https?:\/\//i.test(savedApi)) {
+  savedApi = "";
+}
+
+// 4) Evita same-origin del frontend en producción
+try {
+  const origin = typeof window !== "undefined" ? trimSlash(window.location.origin) : "";
+  if (savedApi && origin && trimSlash(savedApi) === origin) {
+    lsDel("apiBase");
+    savedApi = "";
+  }
+} catch { /* ignore */ }
+
+// 5) La API final: env > saved > default
+let API = trimSlash(ENV_API || savedApi || DEFAULT_API);
+
+// API key (env > localStorage > default dev)
 const envKey = ENV.VITE_API_KEY as string | undefined;
 const storedKey = lsGet("apiKey", "");
 let API_KEY = (envKey ?? storedKey) || "simulador123";
@@ -43,6 +64,11 @@ const HTTP_TIMEOUT_MS = Number(ENV.VITE_HTTP_TIMEOUT_MS ?? 10_000);
 /* ========= Setters / Getters ========= */
 
 export function setApiBase(url: string) {
+  // Si hay ENV_API en build, lo respetamos y NO permitimos override con setApiBase
+  if (ENV_API) {
+    API = trimSlash(ENV_API);
+    return;
+  }
   API = trimSlash(url || DEFAULT_API);
   lsSet("apiBase", API);
 }
