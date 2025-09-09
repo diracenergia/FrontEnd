@@ -4,9 +4,14 @@
 
 const ENV = (import.meta as any)?.env ?? {};
 
-// Quita trailing slashes
 function trimSlash(s: string) {
   return String(s || "").replace(/\/+$/, "");
+}
+function isAbsHttpUrl(s: string) {
+  return /^https?:\/\//i.test(String(s || ""));
+}
+function isAbsWsUrl(s: string) {
+  return /^wss?:\/\//i.test(String(s || ""));
 }
 
 // Helpers localStorage (seguros)
@@ -14,75 +19,123 @@ function lsGet(key: string, fallback = ""): string {
   try {
     const v = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
     return v ?? fallback;
-  } catch {
-    return fallback;
-  }
+  } catch { return fallback; }
 }
 function lsSet(key: string, val: string) {
-  try {
-    if (typeof localStorage !== "undefined") localStorage.setItem(key, val);
-  } catch { /* ignore */ }
+  try { if (typeof localStorage !== "undefined") localStorage.setItem(key, val); } catch {}
 }
 function lsDel(key: string) {
-  try {
-    if (typeof localStorage !== "undefined") localStorage.removeItem(key);
-  } catch { /* ignore */ }
+  try { if (typeof localStorage !== "undefined") localStorage.removeItem(key); } catch {}
 }
 
-// 1) API por env (si existe) y default local
-const ENV_API: string = trimSlash((ENV.VITE_API_URL as string | undefined) ?? "");
-const DEFAULT_API = "http://127.0.0.1:8000";
+/**
+ * PRIORIDADES URL base HTTP:
+ * 1) ENV (soporta ambos nombres): VITE_API_HTTP_URL | VITE_API_URL
+ * 2) localStorage (si es URL absoluta)
+ * 3) por defecto:
+ *    - DEV => http://127.0.0.1:8000
+ *    - PROD => same-origin (window.location.origin)
+ */
+const ENV_API_HTTP: string = trimSlash(
+  (ENV.VITE_API_HTTP_URL as string | undefined) ??
+  (ENV.VITE_API_URL as string | undefined) ??
+  ""
+);
 
-// 2) Lee lo guardado, pero SOLO si no hay env explícita
+const isDev = !!ENV.DEV;
+const RUNTIME_ORIGIN = typeof window !== "undefined" ? trimSlash(window.location.origin) : "";
+const DEFAULT_API_HTTP = isDev ? "http://127.0.0.1:8000" : RUNTIME_ORIGIN;
+
 let savedApi = lsGet("apiBase", "");
+if (savedApi && !isAbsHttpUrl(savedApi)) savedApi = "";
 
-// 3) Sanea: si lo guardado no parece URL absoluta, ignóralo
-if (savedApi && !/^https?:\/\//i.test(savedApi)) {
-  savedApi = "";
-}
-
-// 4) Evita same-origin del frontend en producción
+// Evita guardar same-origin innecesario
 try {
-  const origin = typeof window !== "undefined" ? trimSlash(window.location.origin) : "";
-  if (savedApi && origin && trimSlash(savedApi) === origin) {
-    lsDel("apiBase");
-    savedApi = "";
+  if (savedApi && RUNTIME_ORIGIN && trimSlash(savedApi) === RUNTIME_ORIGIN) {
+    lsDel("apiBase"); savedApi = "";
   }
-} catch { /* ignore */ }
+} catch {}
 
-// 5) La API final: env > saved > default
-let API = trimSlash(ENV_API || savedApi || DEFAULT_API);
+let API = trimSlash(ENV_API_HTTP || savedApi || DEFAULT_API_HTTP);
 
 // API key (env > localStorage > default dev)
-const envKey = ENV.VITE_API_KEY as string | undefined;
+const envKey = (ENV.VITE_API_KEY as string | undefined) ?? undefined;
 const storedKey = lsGet("apiKey", "");
-let API_KEY = (envKey ?? storedKey) || "simulador123";
+let API_KEY = (envKey ?? storedKey) || (isDev ? "simulador123" : "");
 
-// Timeout global para requests (ms)
+// Timeout global (ms)
 const HTTP_TIMEOUT_MS = Number(ENV.VITE_HTTP_TIMEOUT_MS ?? 10_000);
+
+/* ==== WebSocket base / endpoint de telemetría ==== */
+
+/** Si tengo una base http(s), genero ws(s) equivalente */
+function wsFromHttpBase(httpBase: string) {
+  const u = String(httpBase || "");
+  if (u.startsWith("https://")) return "wss://" + u.slice("https://".length);
+  if (u.startsWith("http://"))  return "ws://"  + u.slice("http://".length);
+  if (typeof window !== "undefined") {
+    return (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host;
+  }
+  return "ws://127.0.0.1:8000";
+}
+
+/**
+ * Soporta ambos nombres:
+ *  - VITE_API_WS_URL (base) | VITE_WS_URL (endpoint o base)
+ * Si VITE_WS_URL parece un endpoint completo (ws[s]://...), lo usamos literal.
+ * Si es vacío o no es ws://, derivamos desde la base HTTP y luego /ws/telemetry
+ */
+const RAW_ENV_WS =
+  (ENV.VITE_API_WS_URL as string | undefined) ??
+  (ENV.VITE_WS_URL as string | undefined) ??
+  "";
+
+let WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
+
+export function telemetryWsUrl(params: { apiKey?: string; deviceId?: string } = {}) {
+  const apiKey = params.apiKey ?? API_KEY ?? "";
+  const deviceId = params.deviceId ?? "web-ui";
+
+  // Si viene un endpoint absoluto ws(s)://, lo usamos tal cual (puede traer ya /ws/telemetry)
+  if (isAbsWsUrl(WS_BASE_OR_ENDPOINT)) {
+    const url = new URL(WS_BASE_OR_ENDPOINT);
+    // si no trae query, agregamos; si trae, mergeamos
+    url.searchParams.set("api_key", apiKey);
+    url.searchParams.set("device_id", deviceId);
+    return url.toString();
+  }
+
+  // Si no es ws:// absoluto, asumimos que es BASE y completamos endpoint
+  const base = WS_BASE_OR_ENDPOINT || wsFromHttpBase(API);
+  const sep = base.endsWith("/") ? "" : "/";
+  const u = new URL(`${base}${sep}ws/telemetry`);
+  u.searchParams.set("api_key", apiKey);
+  u.searchParams.set("device_id", deviceId);
+  return u.toString();
+}
 
 /* ========= Setters / Getters ========= */
 
 export function setApiBase(url: string) {
-  // Si hay ENV_API en build, lo respetamos y NO permitimos override con setApiBase
-  if (ENV_API) {
-    API = trimSlash(ENV_API);
+  // Si hay ENV en build, priorizamos ENV y no dejamos override permanente
+  if (ENV_API_HTTP) {
+    API = trimSlash(ENV_API_HTTP);
+    WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
     return;
   }
-  API = trimSlash(url || DEFAULT_API);
+  const clean = trimSlash(url || DEFAULT_API_HTTP);
+  API = clean || DEFAULT_API_HTTP;
+  WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
   lsSet("apiBase", API);
 }
-export function getApiBase() {
-  return API;
-}
+export function getApiBase() { return API; }
+export function getWsBaseOrEndpoint() { return WS_BASE_OR_ENDPOINT; }
 
 export function setApiKey(key: string) {
   API_KEY = String(key || "");
   lsSet("apiKey", API_KEY);
 }
-export function getApiKey() {
-  return API_KEY;
-}
+export function getApiKey() { return API_KEY; }
 
 /* ========= Headers comunes ========= */
 
@@ -90,8 +143,7 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
   const base: HeadersInit = {
     Accept: "application/json",
     "X-API-Key": String(API_KEY),
-    // En paralelo mandamos Authorization por compat / evolución
-    Authorization: `Bearer ${String(API_KEY)}`,
+    Authorization: `Bearer ${String(API_KEY)}`, // compat
   };
   return { ...base, ...(extra ?? {}) };
 }
@@ -161,7 +213,7 @@ export type PumpHistoryPoint = {
 export type TankWithConfig = {
   id: number;
   name: string;
-  capacity_liters: number | null; // normalizado desde capacity_m3*1000 si hace falta
+  capacity_liters: number | null;
   low_pct: number | null;
   low_low_pct: number | null;
   high_pct: number | null;
@@ -251,45 +303,31 @@ async function jrequest<T>(method: "GET" | "POST" | "PUT", path: string, body?: 
     const r = await fetch(url, {
       method,
       headers: authHeaders(
-        body != null
-          ? { "Content-Type": "application/json", ...(extraHeaders ?? {}) }
-          : extraHeaders
+        body != null ? { "Content-Type": "application/json", ...(extraHeaders ?? {}) } : extraHeaders
       ),
       body: body != null ? JSON.stringify(body) : undefined,
       signal: ctrl.signal,
     });
 
-    // 204 No Content
     if (r.status === 204) return {} as T;
 
-    // Intentar parsear JSON, tolerando errores
     let data: any = {};
-    try {
-      data = await r.json();
-    } catch {
-      // si no es JSON, intentá leer texto por si hay info útil
+    try { data = await r.json(); }
+    catch {
       const txt = await r.text().catch(() => "");
       data = txt ? { text: txt } : {};
     }
 
-    if (!r.ok) {
-      throw new Error(`${method} ${path} -> ${httpErrorMessage(r, data)}`);
-    }
+    if (!r.ok) throw new Error(`${method} ${path} -> ${httpErrorMessage(r, data)}`);
     return data as T;
   } finally {
     clearTimeout(t);
   }
 }
 
-async function jget<T>(path: string): Promise<T> {
-  return jrequest<T>("GET", path);
-}
-async function jpost<T>(path: string, body: any): Promise<T> {
-  return jrequest<T>("POST", path, body);
-}
-async function jput<T>(path: string, body: any): Promise<T> {
-  return jrequest<T>("PUT", path, body);
-}
+async function jget<T>(path: string): Promise<T> { return jrequest<T>("GET", path); }
+async function jpost<T>(path: string, body: any): Promise<T> { return jrequest<T>("POST", path, body); }
+async function jput<T>(path: string, body: any): Promise<T> { return jrequest<T>("PUT", path, body); }
 
 // Querystring limpio (omite undefined/null)
 function qs(params?: Record<string, any>) {
@@ -323,9 +361,7 @@ function normalizeCmd(cmd: QueuePumpCmdIn["cmd"]): PumpCmd {
   const raw = (cmd || "").toString();
   const c = raw.startsWith("CMD_") ? raw.slice(4) : raw;
   const U = c.toUpperCase();
-  if (U === "START" || U === "STOP" || U === "AUTO" || U === "MAN" || U === "SPEED") {
-    return U as PumpCmd;
-  }
+  if (U === "START" || U === "STOP" || U === "AUTO" || U === "MAN" || U === "SPEED") return U as PumpCmd;
   throw new Error(`cmd inválido: ${raw}`);
 }
 
@@ -349,10 +385,8 @@ export const api = {
     })) as TankWithConfig[];
   },
   saveTankConfig: async (tankId: number, cfg: TankConfigIn) => {
-    try {
-      return await jput<{ ok: true; config: any }>(`/tanks/${tankId}/config`, cfg);
-    } catch (e: any) {
-      // compat: backend antiguo que usa POST
+    try { return await jput<{ ok: true; config: any }>(`/tanks/${tankId}/config`, cfg); }
+    catch (e: any) {
       if (String(e?.message || "").includes("405")) {
         return await jpost<{ ok: true; config: any }>(`/tanks/${tankId}/config`, cfg);
       }
@@ -369,9 +403,8 @@ export const api = {
   /* ---- Config Pumps ---- */
   listPumpsWithConfig: () => jget<PumpWithConfig[]>("/pumps/config"),
   savePumpConfig: async (pumpId: number, cfg: PumpConfigIn) => {
-    try {
-      return await jput<{ ok: true; config: any }>(`/pumps/${pumpId}/config`, cfg);
-    } catch (e: any) {
+    try { return await jput<{ ok: true; config: any }>(`/pumps/${pumpId}/config`, cfg); }
+    catch (e: any) {
       if (String(e?.message || "").includes("405")) {
         return await jpost<{ ok: true; config: any }>(`/pumps/${pumpId}/config`, cfg);
       }
@@ -382,19 +415,13 @@ export const api = {
   /* ---- Comandos bomba ---- */
   queuePumpCommand: (pumpId: number, body: QueuePumpCmdIn) => {
     const clean: any = { cmd: normalizeCmd(body.cmd), user: body.user || "operador" };
-    if (clean.cmd === "SPEED" && typeof body.speed_pct === "number") {
-      clean.speed_pct = body.speed_pct;
-    }
+    if (clean.cmd === "SPEED" && typeof body.speed_pct === "number") clean.speed_pct = body.speed_pct;
     return jpost<PumpCommandRow>(`/pumps/${pumpId}/command`, clean);
   },
-  startPump: (pumpId: number, user = "operador") =>
-    api.queuePumpCommand(pumpId, { cmd: "START", user }),
-  stopPump: (pumpId: number, user = "operador") =>
-    api.queuePumpCommand(pumpId, { cmd: "STOP", user }),
-  autoPump: (pumpId: number, user = "operador") =>
-    api.queuePumpCommand(pumpId, { cmd: "AUTO", user }),
-  manPump: (pumpId: number, user = "operador") =>
-    api.queuePumpCommand(pumpId, { cmd: "MAN", user }),
+  startPump: (pumpId: number, user = "operador") => api.queuePumpCommand(pumpId, { cmd: "START", user }),
+  stopPump:  (pumpId: number, user = "operador") => api.queuePumpCommand(pumpId, { cmd: "STOP",  user }),
+  autoPump:  (pumpId: number, user = "operador") => api.queuePumpCommand(pumpId, { cmd: "AUTO",  user }),
+  manPump:   (pumpId: number, user = "operador") => api.queuePumpCommand(pumpId, { cmd: "MAN",   user }),
   speedPump: (pumpId: number, speed_pct: number, user = "operador") =>
     api.queuePumpCommand(pumpId, { cmd: "SPEED", user, speed_pct }),
 
@@ -402,14 +429,9 @@ export const api = {
     jget<PumpCommandRow[]>(`/pumps/${pumpId}/commands${qs({ status })}`),
 
   updatePumpCommandStatus: (
-    pumpId: number,
-    cmdId: number,
-    status: Exclude<PumpCmdStatus, "queued">,
-    error?: string
-  ) =>
-    jpost<{ id: number; status: PumpCmdStatus }>(
-      `/pumps/${pumpId}/commands/${cmdId}/status`,
-      { status, error }
+    pumpId: number, cmdId: number, status: Exclude<PumpCmdStatus, "queued">, error?: string
+  ) => jpost<{ id: number; status: PumpCmdStatus }>(
+      `/pumps/${pumpId}/commands/${cmdId}/status`, { status, error }
     ),
 
   /* ---- Alarmas ---- */
