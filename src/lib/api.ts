@@ -36,8 +36,11 @@ const envKey = (ENV.VITE_API_KEY as string | undefined) ?? "";
 const storedKey = lsGet("apiKey", "");
 let API_KEY = (envKey || storedKey || (isDev ? "simulador123" : ""));
 
-// Timeout global (ms)
-const HTTP_TIMEOUT_MS = Number(ENV.VITE_HTTP_TIMEOUT_MS ?? 10_000);
+// Timeout y retries
+const HTTP_TIMEOUT_MS = Number(ENV.VITE_HTTP_TIMEOUT_MS ?? 45_000);
+const HTTP_RETRIES = Math.max(0, Number(ENV.VITE_HTTP_RETRIES ?? 2));         // reintentos extra
+const RETRY_BASE_MS = Math.max(50, Number(ENV.VITE_HTTP_RETRY_BASE_MS ?? 500)); // backoff base
+const WAKE_ON_FAIL = String(ENV.VITE_HTTP_WAKE_ON_FAIL ?? "true").toLowerCase() !== "false";
 
 // WS (env endpoint/base -> si no, derivar desde HTTP)
 function wsFromHttpBase(httpBase: string) {
@@ -85,7 +88,7 @@ export function telemetryWsUrl(params: { apiKey?: string; deviceId?: string } = 
   if (isAbsWsUrl(WS_BASE_OR_ENDPOINT)) {
     const url = new URL(WS_BASE_OR_ENDPOINT);
 
-    // 🩹 Si no trae path, forzamos /ws/telemetry
+    // Si no trae path, forzamos /ws/telemetry
     if (!url.pathname || url.pathname === "/") {
       url.pathname = "/ws/telemetry";
     }
@@ -104,6 +107,24 @@ export function telemetryWsUrl(params: { apiKey?: string; deviceId?: string } = 
   return u.toString();
 }
 
+export function debugConfig() {
+  return {
+    apiBase: API,
+    wsUrl: telemetryWsUrl(),
+    apiKeySet: !!API_KEY,
+    timeoutMs: HTTP_TIMEOUT_MS,
+    retries: HTTP_RETRIES,
+  };
+}
+
+export async function pingHealth(): Promise<{ ok: boolean }> {
+  try {
+    const r = await fetch(`${API}/health`, { method: "GET" });
+    return { ok: r.ok };
+  } catch {
+    return { ok: false };
+  }
+}
 
 /* ========= Headers comunes ========= */
 
@@ -117,7 +138,140 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
   return { ...base, ...(extra ?? {}) };
 }
 
-/* ========= Tipos ========= */
+/* ========= Helpers HTTP con retries ========= */
+
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
+
+function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
+function backoff(attempt: number) {
+  // attempt: 0..HTTP_RETRIES → 0,1,2…  exponencial simple + jitter
+  const base = RETRY_BASE_MS * Math.pow(2, attempt);
+  const jitter = Math.floor(Math.random() * (RETRY_BASE_MS / 2));
+  return base + jitter;
+}
+
+function isAbortOrNetwork(e: any) {
+  const name = String(e?.name || "");
+  const msg = String(e?.message || "");
+  return name === "AbortError" || /aborted|network|Failed to fetch/i.test(msg);
+}
+
+function httpErrorMessage(r: Response, data: any) {
+  const msg = data?.detail || data?.error;
+  return msg ? String(msg) : `${r.status} ${r.statusText}`;
+}
+
+async function jrequest<T>(
+  method: "GET" | "POST" | "PUT",
+  path: string,
+  body?: any,
+  extraHeaders?: HeadersInit
+): Promise<T> {
+  const url = `${API}${path}`;
+  let lastErr: any = null;
+
+  for (let attempt = 0; attempt <= HTTP_RETRIES; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HTTP_TIMEOUT_MS);
+
+    try {
+      const r = await fetch(url, {
+        method,
+        headers: authHeaders(
+          body != null ? { "Content-Type": "application/json", ...(extraHeaders ?? {}) } : extraHeaders
+        ),
+        body: body != null ? JSON.stringify(body) : undefined,
+        signal: ctrl.signal,
+        // mode: "cors" // por defecto ya es "cors" en navegador
+      });
+
+      // ¿retry por status?
+      if (!r.ok && RETRYABLE_STATUS.has(r.status) && attempt < HTTP_RETRIES) {
+        lastErr = new Error(`${r.status} ${r.statusText}`);
+        clearTimeout(timer);
+        await sleep(backoff(attempt));
+        continue;
+      }
+
+      // 204 No Content
+      if (r.status === 204) return {} as T;
+
+      // Intentar parsear JSON; si no, texto
+      let data: any = {};
+      try { data = await r.json(); }
+      catch {
+        const txt = await r.text().catch(() => "");
+        data = txt ? { text: txt } : {};
+      }
+
+      if (!r.ok) {
+        throw new Error(`${method} ${path} -> ${httpErrorMessage(r, data)}`);
+      }
+      return data as T;
+
+    } catch (e: any) {
+      lastErr = e;
+      // ¿retry por AbortError / red?
+      if (isAbortOrNetwork(e) && attempt < HTTP_RETRIES) {
+        // “Despertar” backend si está dormido (opcional)
+        if (WAKE_ON_FAIL && attempt === 0) {
+          try { await pingHealth(); } catch {}
+        }
+        clearTimeout(timer);
+        await sleep(backoff(attempt));
+        continue;
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // en teoría no llega acá, pero por las dudas:
+  throw lastErr ?? new Error(`${method} ${path} failed`);
+}
+
+async function jget<T>(path: string): Promise<T> { return jrequest<T>("GET", path); }
+async function jpost<T>(path: string, body: any): Promise<T> { return jrequest<T>("POST", path, body); }
+async function jput<T>(path: string, body: any): Promise<T> { return jrequest<T>("PUT", path, body); }
+
+// Querystring limpio (omite undefined/null)
+function qs(params?: Record<string, any>) {
+  if (!params) return "";
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null) continue;
+    sp.set(k, String(v));
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : "";
+}
+
+// Normaliza "CMD_START" -> "START"
+export type PumpCmd = "START" | "STOP" | "AUTO" | "MAN" | "SPEED";
+export type PumpCmdStatus = "queued" | "sent" | "acked" | "failed" | "expired";
+export type QueuePumpCmdIn = { cmd: PumpCmd | `CMD_${PumpCmd}`; user: string; speed_pct?: number };
+export type PumpCommandRow = {
+  id: number;
+  pump_id: number;
+  cmd: PumpCmd;
+  status: PumpCmdStatus;
+  payload: any | null;
+  ts_created: string;
+  ts_sent?: string | null;
+  ts_acked?: string | null;
+  error?: string | null;
+};
+
+function normalizeCmd(cmd: QueuePumpCmdIn["cmd"]): PumpCmd {
+  const raw = (cmd || "").toString();
+  const c = raw.startsWith("CMD_") ? raw.slice(4) : raw;
+  const U = c.toUpperCase();
+  if (U === "START" || U === "STOP" || U === "AUTO" || U === "MAN" || U === "SPEED") return U as PumpCmd;
+  throw new Error(`cmd inválido: ${raw}`);
+}
+
+/* ========= Tipos de dominio ========= */
 
 export type Tank = {
   id: number;
@@ -255,86 +409,6 @@ export type PresenceStatus = {
   online: boolean;
   last_seen: string | null;
 };
-
-/* ========= Helpers HTTP ========= */
-
-function httpErrorMessage(r: Response, data: any) {
-  const msg = data?.detail || data?.error;
-  return msg ? String(msg) : `${r.status} ${r.statusText}`;
-}
-
-async function jrequest<T>(method: "GET" | "POST" | "PUT", path: string, body?: any, extraHeaders?: HeadersInit): Promise<T> {
-  const url = `${API}${path}`;
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), HTTP_TIMEOUT_MS);
-
-  try {
-    const r = await fetch(url, {
-      method,
-      headers: authHeaders(
-        body != null ? { "Content-Type": "application/json", ...(extraHeaders ?? {}) } : extraHeaders
-      ),
-      body: body != null ? JSON.stringify(body) : undefined,
-      signal: ctrl.signal,
-    });
-
-    if (r.status === 204) return {} as T;
-
-    let data: any = {};
-    try { data = await r.json(); }
-    catch {
-      const txt = await r.text().catch(() => "");
-      data = txt ? { text: txt } : {};
-    }
-
-    if (!r.ok) {
-      throw new Error(`${method} ${path} -> ${httpErrorMessage(r, data)}`);
-    }
-    return data as T;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-async function jget<T>(path: string): Promise<T> { return jrequest<T>("GET", path); }
-async function jpost<T>(path: string, body: any): Promise<T> { return jrequest<T>("POST", path, body); }
-async function jput<T>(path: string, body: any): Promise<T> { return jrequest<T>("PUT", path, body); }
-
-// Querystring limpio (omite undefined/null)
-function qs(params?: Record<string, any>) {
-  if (!params) return "";
-  const sp = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v === undefined || v === null) continue;
-    sp.set(k, String(v));
-  }
-  const s = sp.toString();
-  return s ? `?${s}` : "";
-}
-
-// Normaliza "CMD_START" -> "START"
-export type PumpCmd = "START" | "STOP" | "AUTO" | "MAN" | "SPEED";
-export type PumpCmdStatus = "queued" | "sent" | "acked" | "failed" | "expired";
-export type QueuePumpCmdIn = { cmd: PumpCmd | `CMD_${PumpCmd}`; user: string; speed_pct?: number };
-export type PumpCommandRow = {
-  id: number;
-  pump_id: number;
-  cmd: PumpCmd;
-  status: PumpCmdStatus;
-  payload: any | null;
-  ts_created: string;
-  ts_sent?: string | null;
-  ts_acked?: string | null;
-  error?: string | null;
-};
-
-function normalizeCmd(cmd: QueuePumpCmdIn["cmd"]): PumpCmd {
-  const raw = (cmd || "").toString();
-  const c = raw.startsWith("CMD_") ? raw.slice(4) : raw;
-  const U = c.toUpperCase();
-  if (U === "START" || U === "STOP" || U === "AUTO" || U === "MAN" || U === "SPEED") return U as PumpCmd;
-  throw new Error(`cmd inválido: ${raw}`);
-}
 
 /* ========= Endpoints ========= */
 
