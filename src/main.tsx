@@ -3,17 +3,19 @@ import ReactDOM from "react-dom/client";
 import "./index.css";
 import AppRoot from "./components/scada/AppRoot";
 
-// 🔍 LOG 1: envs que Vite debería inyectar en el build
+import { getApiBase, telemetryWsUrl, getApiKey, setApiBase, setApiKey } from "./lib/api";
+
+// 🔧 Fuerza valores desde las envs de Vite (parche de runtime)
+setApiBase(import.meta.env.VITE_API_URL as string);
+setApiKey(import.meta.env.VITE_API_KEY as string);
+
+// Logs para verificar
 console.log("[ENV]", {
   VITE_API_URL: import.meta.env.VITE_API_URL,
   VITE_WS_URL:  import.meta.env.VITE_WS_URL,
   VITE_API_KEY: import.meta.env.VITE_API_KEY,
 });
 
-// ✅ Import correcto del helper (ruta relativa)
-import { getApiBase, telemetryWsUrl, getApiKey } from "./lib/api";
-
-// 🔍 LOG 2: qué está usando realmente el front en runtime
 console.log("[CFG]", {
   apiBase: getApiBase(),
   wsUrl: telemetryWsUrl(),

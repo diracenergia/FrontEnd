@@ -1,111 +1,95 @@
 // src/lib/api.ts
 
-/* ========= Config dinámica (API + API Key) ========= */
+/* ========= Config dinámica (API + API Key + WS) ========= */
 
 const ENV = (import.meta as any)?.env ?? {};
 
-function trimSlash(s: string) {
-  return String(s || "").replace(/\/+$/, "");
-}
-function isAbsHttpUrl(s: string) {
-  return /^https?:\/\//i.test(String(s || ""));
-}
-function isAbsWsUrl(s: string) {
-  return /^wss?:\/\//i.test(String(s || ""));
-}
+function trimSlash(s: string) { return String(s || "").replace(/\/+$/, ""); }
+function isAbsHttpUrl(s: string) { return /^https?:\/\//i.test(String(s || "")); }
+function isAbsWsUrl(s: string) { return /^wss?:\/\//i.test(String(s || "")); }
 
-// Helpers localStorage (seguros)
-function lsGet(key: string, fallback = ""): string {
-  try {
-    const v = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
-    return v ?? fallback;
-  } catch { return fallback; }
-}
-function lsSet(key: string, val: string) {
-  try { if (typeof localStorage !== "undefined") localStorage.setItem(key, val); } catch {}
-}
-function lsDel(key: string) {
-  try { if (typeof localStorage !== "undefined") localStorage.removeItem(key); } catch {}
-}
+// LocalStorage helpers (seguros)
+function lsGet(k: string, fb = "") { try { return typeof localStorage !== "undefined" ? localStorage.getItem(k) ?? fb : fb; } catch { return fb; } }
+function lsSet(k: string, v: string) { try { if (typeof localStorage !== "undefined") localStorage.setItem(k, v); } catch {} }
+function lsDel(k: string) { try { if (typeof localStorage !== "undefined") localStorage.removeItem(k); } catch {} }
 
-/**
- * PRIORIDADES URL base HTTP:
- * 1) ENV (soporta ambos nombres): VITE_API_HTTP_URL | VITE_API_URL
- * 2) localStorage (si es URL absoluta)
- * 3) por defecto:
- *    - DEV => http://127.0.0.1:8000
- *    - PROD => same-origin (window.location.origin)
- */
-const ENV_API_HTTP: string = trimSlash(
-  (ENV.VITE_API_HTTP_URL as string | undefined) ??
+const isDev = !!ENV.DEV;
+
+// HTTP base (env > saved > default)
+const ENV_API_HTTP = trimSlash(
   (ENV.VITE_API_URL as string | undefined) ??
+  (ENV.VITE_API_HTTP_URL as string | undefined) ??
   ""
 );
 
-const isDev = !!ENV.DEV;
 const RUNTIME_ORIGIN = typeof window !== "undefined" ? trimSlash(window.location.origin) : "";
 const DEFAULT_API_HTTP = isDev ? "http://127.0.0.1:8000" : RUNTIME_ORIGIN;
 
 let savedApi = lsGet("apiBase", "");
 if (savedApi && !isAbsHttpUrl(savedApi)) savedApi = "";
-
-// Evita guardar same-origin innecesario
-try {
-  if (savedApi && RUNTIME_ORIGIN && trimSlash(savedApi) === RUNTIME_ORIGIN) {
-    lsDel("apiBase"); savedApi = "";
-  }
-} catch {}
+if (savedApi && RUNTIME_ORIGIN && trimSlash(savedApi) === RUNTIME_ORIGIN) { lsDel("apiBase"); savedApi = ""; }
 
 let API = trimSlash(ENV_API_HTTP || savedApi || DEFAULT_API_HTTP);
 
-// API key (env > localStorage > default dev)
-const envKey = (ENV.VITE_API_KEY as string | undefined) ?? undefined;
+// API key (env > saved > default dev)
+const envKey = (ENV.VITE_API_KEY as string | undefined) ?? "";
 const storedKey = lsGet("apiKey", "");
-let API_KEY = (envKey ?? storedKey) || (isDev ? "simulador123" : "");
+let API_KEY = (envKey || storedKey || (isDev ? "simulador123" : ""));
 
 // Timeout global (ms)
 const HTTP_TIMEOUT_MS = Number(ENV.VITE_HTTP_TIMEOUT_MS ?? 10_000);
 
-/* ==== WebSocket base / endpoint de telemetría ==== */
-
-/** Si tengo una base http(s), genero ws(s) equivalente */
+// WS (env endpoint/base -> si no, derivar desde HTTP)
 function wsFromHttpBase(httpBase: string) {
   const u = String(httpBase || "");
-  if (u.startsWith("https://")) return "wss://" + u.slice("https://".length);
-  if (u.startsWith("http://"))  return "ws://"  + u.slice("http://".length);
-  if (typeof window !== "undefined") {
-    return (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host;
-  }
+  if (u.startsWith("https://")) return "wss://" + u.slice(8);
+  if (u.startsWith("http://"))  return "ws://"  + u.slice(7);
+  if (typeof window !== "undefined") return (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
   return "ws://127.0.0.1:8000";
 }
-
-/**
- * Soporta ambos nombres:
- *  - VITE_API_WS_URL (base) | VITE_WS_URL (endpoint o base)
- * Si VITE_WS_URL parece un endpoint completo (ws[s]://...), lo usamos literal.
- * Si es vacío o no es ws://, derivamos desde la base HTTP y luego /ws/telemetry
- */
 const RAW_ENV_WS =
-  (ENV.VITE_API_WS_URL as string | undefined) ??
   (ENV.VITE_WS_URL as string | undefined) ??
+  (ENV.VITE_API_WS_URL as string | undefined) ??
   "";
-
 let WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
 
+/* ========= Setters / Getters ========= */
+
+export function setApiBase(url: string) {
+  // Si vino por ENV, prevalece (no sobrescribimos en prod)
+  if (ENV_API_HTTP) {
+    API = trimSlash(ENV_API_HTTP);
+    WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
+    return;
+  }
+  API = trimSlash(url || DEFAULT_API_HTTP) || DEFAULT_API_HTTP;
+  WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
+  lsSet("apiBase", API);
+}
+export function getApiBase() { return API; }
+
+export function setApiKey(key: string) {
+  API_KEY = String(key || "");
+  lsSet("apiKey", API_KEY);
+}
+export function getApiKey() { return API_KEY; }
+
+export function getWsBaseOrEndpoint() { return WS_BASE_OR_ENDPOINT; }
+
+/** Devuelve la URL final del WS de telemetría con query params */
 export function telemetryWsUrl(params: { apiKey?: string; deviceId?: string } = {}) {
   const apiKey = params.apiKey ?? API_KEY ?? "";
   const deviceId = params.deviceId ?? "web-ui";
 
-  // Si viene un endpoint absoluto ws(s)://, lo usamos tal cual (puede traer ya /ws/telemetry)
+  // Si el valor es un ws:// o wss:// completo, lo usamos tal cual y le anexamos query
   if (isAbsWsUrl(WS_BASE_OR_ENDPOINT)) {
     const url = new URL(WS_BASE_OR_ENDPOINT);
-    // si no trae query, agregamos; si trae, mergeamos
     url.searchParams.set("api_key", apiKey);
     url.searchParams.set("device_id", deviceId);
     return url.toString();
   }
 
-  // Si no es ws:// absoluto, asumimos que es BASE y completamos endpoint
+  // Si no es absoluto, asumimos que es base y agregamos el endpoint
   const base = WS_BASE_OR_ENDPOINT || wsFromHttpBase(API);
   const sep = base.endsWith("/") ? "" : "/";
   const u = new URL(`${base}${sep}ws/telemetry`);
@@ -114,36 +98,14 @@ export function telemetryWsUrl(params: { apiKey?: string; deviceId?: string } = 
   return u.toString();
 }
 
-/* ========= Setters / Getters ========= */
-
-export function setApiBase(url: string) {
-  // Si hay ENV en build, priorizamos ENV y no dejamos override permanente
-  if (ENV_API_HTTP) {
-    API = trimSlash(ENV_API_HTTP);
-    WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
-    return;
-  }
-  const clean = trimSlash(url || DEFAULT_API_HTTP);
-  API = clean || DEFAULT_API_HTTP;
-  WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
-  lsSet("apiBase", API);
-}
-export function getApiBase() { return API; }
-export function getWsBaseOrEndpoint() { return WS_BASE_OR_ENDPOINT; }
-
-export function setApiKey(key: string) {
-  API_KEY = String(key || "");
-  lsSet("apiKey", API_KEY);
-}
-export function getApiKey() { return API_KEY; }
-
 /* ========= Headers comunes ========= */
 
 function authHeaders(extra?: HeadersInit): HeadersInit {
   const base: HeadersInit = {
     Accept: "application/json",
     "X-API-Key": String(API_KEY),
-    Authorization: `Bearer ${String(API_KEY)}`, // compat
+    // compat futura
+    Authorization: `Bearer ${String(API_KEY)}`,
   };
   return { ...base, ...(extra ?? {}) };
 }
@@ -213,7 +175,7 @@ export type PumpHistoryPoint = {
 export type TankWithConfig = {
   id: number;
   name: string;
-  capacity_liters: number | null;
+  capacity_liters: number | null; // normalizado desde capacity_m3*1000 si hace falta
   low_pct: number | null;
   low_low_pct: number | null;
   high_pct: number | null;
@@ -318,7 +280,9 @@ async function jrequest<T>(method: "GET" | "POST" | "PUT", path: string, body?: 
       data = txt ? { text: txt } : {};
     }
 
-    if (!r.ok) throw new Error(`${method} ${path} -> ${httpErrorMessage(r, data)}`);
+    if (!r.ok) {
+      throw new Error(`${method} ${path} -> ${httpErrorMessage(r, data)}`);
+    }
     return data as T;
   } finally {
     clearTimeout(t);
@@ -385,8 +349,10 @@ export const api = {
     })) as TankWithConfig[];
   },
   saveTankConfig: async (tankId: number, cfg: TankConfigIn) => {
-    try { return await jput<{ ok: true; config: any }>(`/tanks/${tankId}/config`, cfg); }
-    catch (e: any) {
+    try {
+      return await jput<{ ok: true; config: any }>(`/tanks/${tankId}/config`, cfg);
+    } catch (e: any) {
+      // compat: backend antiguo que usa POST
       if (String(e?.message || "").includes("405")) {
         return await jpost<{ ok: true; config: any }>(`/tanks/${tankId}/config`, cfg);
       }
@@ -403,8 +369,9 @@ export const api = {
   /* ---- Config Pumps ---- */
   listPumpsWithConfig: () => jget<PumpWithConfig[]>("/pumps/config"),
   savePumpConfig: async (pumpId: number, cfg: PumpConfigIn) => {
-    try { return await jput<{ ok: true; config: any }>(`/pumps/${pumpId}/config`, cfg); }
-    catch (e: any) {
+    try {
+      return await jput<{ ok: true; config: any }>(`/pumps/${pumpId}/config`, cfg);
+    } catch (e: any) {
       if (String(e?.message || "").includes("405")) {
         return await jpost<{ ok: true; config: any }>(`/pumps/${pumpId}/config`, cfg);
       }
