@@ -92,6 +92,7 @@ export default function App() {
   const fitToContent = () => {
     const bb = nodesBBox();
     setVb({ x: bb.minX, y: bb.minY, w: bb.w, h: bb.h });
+    console.log("[App] fitToContent →", { vb: { x: bb.minX, y: bb.minY, w: bb.w, h: bb.h } });
   };
 
   // helper para aplicar zoom centrado bajo el cursor
@@ -113,10 +114,19 @@ export default function App() {
     setVb({ x: nx, y: ny, w: nw, h: nh });
   }
 
+  // Mount + listeners
   useEffect(() => {
+    console.groupCollapsed("[App] mount");
+    console.log("nodes", NODES.length, "edges", edges.length, "scenario", scenario);
+    console.groupEnd();
+
     // cargar layout guardado (si existe)
     const loaded = loadLayoutFromStorage();
-    if (loaded) scheduleTick();
+    if (loaded) {
+      console.log("[App] layout cargado desde storage");
+      scheduleTick();
+    }
+
     // auto-fit inicial
     fitToContent();
 
@@ -133,7 +143,9 @@ export default function App() {
     svg.addEventListener("wheel", onWheelNative, { passive: false });
 
     // re-fit al cambiar tamaño del contenedor (restaurar ventana)
-    const ro = new ResizeObserver(() => fitToContent());
+    const ro = new ResizeObserver(() => {
+      fitToContent();
+    });
     const host = svg.parentElement;
     if (host) ro.observe(host);
 
@@ -143,6 +155,19 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Log de cambios de escenario y edges
+  useEffect(() => {
+    console.groupCollapsed("[App] scenario change");
+    console.log("scenario:", scenario);
+    console.log("edges:", edges.length);
+    console.groupEnd();
+  }, [scenario, edges.length]);
+
+  // Log de cambios de viewBox
+  useEffect(() => {
+    console.log("[App] viewBox", vb);
+  }, [vb]);
 
   // --------------------------
   // Pan con ruedita PRESIONADA
@@ -212,7 +237,10 @@ export default function App() {
         saveLayoutToStorage();
         scheduleTick();
       },
-      onEnd: () => setPressed(false),
+      onEnd: () => {
+        setPressed(false);
+        console.log("[Drag] end", id, "→", { x: byId[id].x, y: byId[id].y });
+      },
     });
 
     const x = n.x - halfW - 8;
@@ -225,6 +253,7 @@ export default function App() {
       if (e.button === 1) return;
       setPressed(true);
       drag.onPointerDown(e as any);
+      console.log("[Drag] start", id);
     };
 
     return (
@@ -277,6 +306,7 @@ export default function App() {
   // Reset de auto-layout
   // --------------------------
   function resetAuto() {
+    console.log("[Layout] reset auto");
     const fresh = computeAutoLayout(BASE_NODES);
     for (const f of fresh) {
       if (byId[f.id]) {
@@ -294,6 +324,7 @@ export default function App() {
   // --------------------------
   function doExportJSON() {
     const data = exportLayout();
+    console.log("[Layout] export JSON", data);
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -311,7 +342,9 @@ export default function App() {
         saveLayoutToStorage();
         scheduleTick();
         fitToContent();
-      } catch {
+        console.log("[Layout] import OK", arr);
+      } catch (err) {
+        console.error("[Layout] import ERROR", err);
         alert("Archivo inválido");
       }
     };
@@ -340,6 +373,7 @@ export default function App() {
                 key={name}
                 variant={scenario === (name as any) ? "default" : "outline"}
                 onClick={() => setScenario(name as any)}
+                title={`Escenario: ${name}`}
               >
                 <Play className="h-4 w-4" /> {name}
               </Button>

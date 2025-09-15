@@ -3,6 +3,8 @@ import React from "react";
 import type { User } from "./types";
 import { Drawer, NavItem, KpiPill, Badge } from "./ui";
 import { OverviewGrid, AlarmsPage, TrendsPage, SettingsPage, AuditPage } from "./pages";
+import InfraestructuraPage from "./pages/InfraestructuraPage"; // 👈 import del tab embebido
+import { useLocation } from "react-router-dom"; // sólo para logs (no navegamos)
 import { hasPerm } from "./rbac";
 import { labelOfTab, sevMeta, severityOf } from "./utils";
 import { usePlant } from "./hooks/usePlant";
@@ -25,7 +27,11 @@ const ONLINE_CRIT_SEC = Number((import.meta as any).env?.VITE_WS_CRIT_SEC ?? 120
 const ALARMS_POLL_MS = Number((import.meta as any).env?.VITE_ALARMS_POLL_MS ?? 5000);
 
 export default function ScadaApp({ initialUser }: { initialUser?: User }) {
-  const [tab, setTab] = React.useState<"overview" | "alarms" | "trends" | "settings" | "audit">("overview");
+  const location = useLocation();
+
+  const [tab, setTab] = React.useState<
+    "overview" | "alarms" | "trends" | "settings" | "audit" | "infra"
+  >("overview");
   const [drawer, setDrawer] = React.useState<{ type: "tank" | "pump" | null; id?: string | null }>({ type: null });
   const [user] = React.useState<User>(initialUser || { id: "u1", name: "operador@rdls", role: "operador" });
 
@@ -39,12 +45,42 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   // ===== Per-device beats (WS) → online/offline por activo =====
   const [beats, setBeats] = React.useState<Record<string, number>>({}); // device_id -> lastBeatMs
 
+  // 🔎 LOG: cada render (ruta + tab)
+  console.log("[ScadaApp] render", {
+    pathname: location.pathname,
+    tab,
+    loading,
+    err: !!err,
+    tanks: plant?.tanks?.length ?? 0,
+    pumps: plant?.pumps?.length ?? 0,
+  });
+
+  // 🔎 LOG: cambios de tab
+  React.useEffect(() => {
+    console.log("[ScadaApp] tab ->", tab);
+  }, [tab]);
+
+  // 🔎 LOG: cambios grandes del plant (solo resumen para no spamear)
+  React.useEffect(() => {
+    console.log("[ScadaApp] plant update", {
+      tanks: plant?.tanks?.length ?? 0,
+      pumps: plant?.pumps?.length ?? 0,
+      alarms: plant?.alarms?.length ?? 0,
+    });
+  }, [plant?.tanks, plant?.pumps, plant?.alarms]);
+
+  // 🔎 LOG: cambios del drawer
+  React.useEffect(() => {
+    console.log("[ScadaApp] drawer ->", drawer);
+  }, [drawer]);
+
   // Helpers para tolerar distintos shapes en los mensajes del backend
   const get = (m: any, k: string) => (m?.[k] !== undefined ? m[k] : m?.payload?.[k]);
   const nowMs = () => Date.now();
 
   React.useEffect(() => {
     // 1) Conectar (idempotente)
+    console.log("[WS] connectTelemetryWS()");
     connectTelemetryWS();
 
     // 2) Suscripción a eventos
@@ -148,37 +184,20 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
       }
     });
 
-    return () => off();
-  }, [setPlant]);
-
-  // 🔁 Poll de alarmas (fallback REST). Mantiene la tabla viva si WS no emite eventos de alarmas.
-  React.useEffect(() => {
-    let timer: number | null = null;
-    let closed = false;
-
-    const fetchOnce = async () => {
-      try {
-        const list = await api.listAlarms(true); // activas
-        if (!closed) {
-          setPlant((prev: any) => ({ ...prev, alarms: Array.isArray(list) ? list : [] }));
-        }
-      } catch (e) {
-        // Silencioso: si falla un tick no interrumpimos UI
-        // console.debug("[alarms poll]", e);
-      }
-    };
-
-    // primer carga
-    fetchOnce();
-
-    if (ALARMS_POLL_MS > 0) {
-      timer = window.setInterval(fetchOnce, ALARMS_POLL_MS) as unknown as number;
-    }
     return () => {
-      closed = true;
-      if (timer != null) clearInterval(timer as any);
+      console.log("[WS] off()");
+      off();
     };
   }, [setPlant]);
+
+  // 🔎 LOG: beats resumen
+  React.useEffect(() => {
+    const keys = Object.keys(beats);
+    if (keys.length) {
+      const sample = keys.slice(0, 3).map((k) => `${k}:${beats[k]}`);
+      console.log("[WS] beats update", { count: keys.length, sample });
+    }
+  }, [beats]);
 
   // Mapa por activo (TK-xx/PU-yy) con estado online/warn/offline según edad del último beat
   const statusByKey = React.useMemo(() => {
@@ -186,10 +205,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
       const last = beats[devId];
       if (!last) return { online: false, ageSec: Infinity, tone: "bad" as const };
       const ageSec = Math.round((nowMs() - last) / 1000);
-      const tone =
-        ageSec < ONLINE_WARN_SEC ? ("ok" as const) :
-        ageSec < ONLINE_CRIT_SEC ? ("warn" as const) :
-        ("bad" as const);
+      const tone = ageSec < ONLINE_WARN_SEC ? ("ok" as const) : ageSec < ONLINE_CRIT_SEC ? ("warn" as const) : ("bad" as const);
       return { online: ageSec < ONLINE_CRIT_SEC, ageSec, tone };
     };
 
@@ -246,8 +262,11 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
         }}
         user={user}
       />
-    ) : (
+    ) : tab === "audit" ? (
       <AuditPage audit={auditRows} />
+    ) : (
+      // 👇 NUEVO: pestaña Infraestructura embebida
+      <InfraestructuraPage />
     );
 
   return (
@@ -256,16 +275,12 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
         <aside className="hidden md:flex md:flex-col md:w-64 bg-white border-r border-slate-200 min-h-screen p-4 justify-between">
           <div>
             <div className="flex items-center gap-2 mb-6">
-  <img
-  src="/img/logodirac.jpeg"
-  alt="Logo DIRAC"
-  className="h-8 w-8 rounded-lg object-cover"
-/>
-  <div>
-    <div className="text-sm text-slate-500">INTRUMENTACION</div>
-    <div className="font-semibold">DIRAC</div>
-  </div>
-</div>
+              <img src="/img/logodirac.jpeg" alt="Logo DIRAC" className="h-8 w-8 rounded-lg object-cover" />
+              <div>
+                <div className="text-sm text-slate-500">INTRUMENTACION</div>
+                <div className="font-semibold">DIRAC</div>
+              </div>
+            </div>
 
             <nav className="space-y-1">
               <NavItem label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} />
@@ -273,8 +288,11 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
               <NavItem label="Tendencias" active={tab === "trends"} onClick={() => setTab("trends")} />
               <NavItem label="Configuración" active={tab === "settings"} onClick={() => setTab("settings")} />
               <NavItem label="Auditoría" active={tab === "audit"} onClick={() => setTab("audit")} />
+              {/* 👉 Ahora es un tab local, no cambiamos de ruta */}
+              <NavItem label="Infraestructura" active={tab === "infra"} onClick={() => setTab("infra")} />
             </nav>
           </div>
+
           <div className="text-xs text-slate-500">
             <div>Usuario: {user.name}</div>
             <div>Rol: {user.role}</div>
@@ -314,7 +332,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
             {loading && !plant.tanks.length ? (
               <div className="p-4">Cargando…</div>
             ) : err ? (
-              <div className="p-4 text-red-600">Error: {err}</div>
+              <div className="p-4 text-red-600">Error: {String(err)}</div>
             ) : (
               body
             )}
@@ -334,7 +352,10 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
         return (
           <Drawer
             open={!!drawer.type}
-            onClose={() => setDrawer({ type: null })}
+            onClose={() => {
+              console.log("[Drawer] close");
+              setDrawer({ type: null });
+            }}
             title={isTank ? t?.name : drawer.type === "pump" ? p?.name : "Faceplate"}
             right={isTank && meta ? <Badge tone={meta.tone}>{meta.label}</Badge> : null}
           >

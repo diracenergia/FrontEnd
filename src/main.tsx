@@ -3,6 +3,8 @@ import ReactDOM from "react-dom/client";
 import "./index.css";
 import AppRoot from "./components/scada/AppRoot";
 
+import { BrowserRouter } from "react-router-dom";
+
 import { getApiBase, telemetryWsUrl, getApiKey, setApiBase, setApiKey } from "./lib/api";
 
 // 🔧 Fuerza valores desde las envs de Vite (parche de runtime)
@@ -24,6 +26,8 @@ console.log("[CFG]", {
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <AppRoot />
+    <BrowserRouter>
+      <AppRoot />
+    </BrowserRouter>
   </React.StrictMode>
 );

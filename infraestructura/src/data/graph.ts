@@ -72,8 +72,13 @@ export const BASE_NODES: Array<Omit<NodeBase, 'x' | 'y'> & Partial<Pick<NodeBase
 // ¡Aquí se calcula todo el layout!
 export const NODES: NodeBase[] = computeAutoLayout(BASE_NODES)
 
-// Aristas y escenarios
-export type EdgeDef = [string, string, '8' | '10' | 'G' | undefined?]
+// ------ Aristas y escenarios ------
+
+// ✅ Definí el tipo de caño una vez
+export type Pipe = '8' | '10' | 'G'
+
+// ✅ La tercera posición de la tupla es OPCIONAL (sin null/undefined raro)
+export type EdgeDef = [string, string, Pipe?]
 
 export const EDGES_BASE: EdgeDef[] = [
   // Planta -> colectora
@@ -110,27 +115,19 @@ export const EDGES_BASE: EdgeDef[] = [
   ['MTAH','PB'],
 ]
 
+// Escenarios con claves <A>B como "A>B"
 export const SCENARIOS = {
   Normal: {
     active: [
-      // Planta
       'MC>M8','M8>V8','V8>TP',
       'MC>M10','M10>V10','V10>TA',
-
-      // Pulmón: boosters -> colectora -> VTAx
       'TP>P8','P8>MB','MB>VTA1','MB>VTA2','MB>VTA3',
       'VTA1>TA1','VTA2>TA2','VTA3>TA3',
-
-      // Gravedad
       'TA>VG','VG>TG',
-
-      // Planta Este activa mínima (P10)
       'P10>ME','ME>TG',
-
-      // (la colectora de tanques altos hacia PB queda instalada pero no activa por defecto)
       // 'TA1>MTAH','TA2>MTAH','TA3>MTAH','MTAH>PB',
     ],
-    note: 'Ø8→Pulmón, Ø10→Almacén. P8 impulsa a VTA1/2/3. P10 (Planta Este) apoya a TG vía su colectora. PB queda en reserva.',
+    note: 'Ø8→Pulmón, Ø10→Almacén. P8 impulsa a VTA1/2/3. P10 apoya a TG.',
   },
   'Pulmón dual': {
     active: [
@@ -142,21 +139,20 @@ export const SCENARIOS = {
       'TA>VG','VG>TG',
       'P10>ME','ME>TG',
     ],
-    note: 'P8 y P9 alimentan colectora; desde ahí a VTA1/2/3. Planta Este apoya TG.',
+    note: 'P8 y P9 alimentan colectora; Planta Este apoya TG.',
   },
   'Sólo Ø8': {
     active: [
       'MC>M8','M8>V8','V8>TP',
       'TP>P8','P8>MB','MB>VTA1','MB>VTA2','MB>VTA3',
       'VTA1>TA1','VTA2>TA2','VTA3>TA3',
-      // sin Ø10; TG puede sostenerse con Planta Este
       'P10>ME','ME>TG',
     ],
-    note: 'Ø10 fuera; Pulmón con P8 → VTA1/2/3. TG apoyado por Planta Este.',
+    note: 'Ø10 fuera; Pulmón con P8 → VTA1/2/3. TG con Planta Este.',
   },
   'Sólo Ø10': {
     active: ['MC>M10','M10>V10','V10>TA','TA>VG','VG>TG','P10>ME','ME>TG'],
-    note: 'Ø8 fuera; Almacén alimenta por gravedad y Planta Este apoya TG.',
+    note: 'Ø8 fuera; Almacén y Planta Este sostienen.',
   },
   Emergencia: {
     active: [

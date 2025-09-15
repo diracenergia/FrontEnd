@@ -6,11 +6,16 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:infra": "cd infraestructura && npm ci && npm run build",
+    "postbuild:infra": "powershell -Command \"Remove-Item -Recurse -Force public\\infraestructura -ErrorAction Ignore; robocopy infraestructura\\dist public\\infraestructura /E\"",
+    "deploy:infra": "npm run build:infra && npm run postbuild:infra",
+    "build:all": "npm run deploy:infra && npm run build"
   },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-router-dom": "^7.9.1",
     "recharts": "^3.1.2"
   },
   "devDependencies": {
