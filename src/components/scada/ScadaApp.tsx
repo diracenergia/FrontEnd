@@ -278,7 +278,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
               <img src="/img/logodirac.jpeg" alt="Logo DIRAC" className="h-8 w-8 rounded-lg object-cover" />
               <div>
                 <div className="text-sm text-slate-500">INTRUMENTACION</div>
-                <div className="font-semibold"></div>
+                <div className="font-semibold">DIRAC</div>
               </div>
             </div>
 
