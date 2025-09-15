@@ -6,8 +6,8 @@ import { fileURLToPath, URL } from 'node:url'
 const isProd = process.env.NODE_ENV === 'production'
 
 export default defineConfig({
-  // En desarrollo sirve en raíz ("/"), en producción bajo subpath "/infraestructura/"
-  base: isProd ? '/infraestructura/' : '/',
+  // En desarrollo sirve en raíz ("/"), en producción bajo subpath "/FrontEnd/infraestructura/"
+  base: isProd ? '/FrontEnd/infraestructura/' : '/',
 
   plugins: [react()],
 
@@ -17,12 +17,19 @@ export default defineConfig({
     },
   },
 
-  // Opcional: puertos fijos para evitar choques cuando tengas ambas apps corriendo
   server: {
     port: 5174,
     strictPort: true,
     open: false,
+    // Proxy para evitar CORS en dev
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000', // FastAPI dev
+        changeOrigin: true,
+      },
+    },
   },
+
   preview: {
     port: 5175,
     strictPort: true,
@@ -31,11 +38,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
-    sourcemap: true,           // ponelo en false si no necesitás debug
+    sourcemap: true,
     chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
-        // Divide dependencias grandes en chunks separados
         manualChunks: {
           react: ['react', 'react-dom'],
           recharts: ['recharts'],
@@ -44,6 +50,5 @@ export default defineConfig({
     },
   },
 
-  // Solo expone variables que empiezan con VITE_ (default), explícito por claridad
   envPrefix: 'VITE_',
 })
