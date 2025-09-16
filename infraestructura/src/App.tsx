@@ -489,7 +489,7 @@ export default function App() {
 
               {/* Agrupaciones automáticas DESDE BACKEND */}
               {locGroups.map((g) => (
-                <AutoGroupBox key={g.label} ids={g.ids} label={g.label} pad={32} />
+                <AutoGroupBox key={g.label} ids={g.ids} label={g.label} pad={102} />
               ))}
               {groupsLoading && (
                 <g>
