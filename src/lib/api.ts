@@ -504,3 +504,43 @@ export const api = {
     jget<PresenceStatus>(`/presence/${encodeURIComponent(deviceId)}`),
   presenceAll: () => jget<Record<string, PresenceStatus>>(`/presence`),
 };
+
+
+
+// --- Tipos para infra/locations ---
+export type Location = {
+  id: string;            // ej: "Planta", "Pulmón", "Tanques Altos"
+  name: string;
+  counts: { tank: number; pump: number; valve: number; manifold: number };
+};
+
+export type LocationSummary = {
+  location: string;      // mismo id
+  counts: { tank: number; pump: number; valve: number; manifold: number };
+  telemetry: {
+    pumps_with_latest: number;
+    tanks_with_latest: number;
+  };
+  kpis: {
+    pumps_uptime_ratio_30d: number | null;
+    tanks_avg_fill_pct_30d: number | null;
+    pumps_kwh_30d: number | null;
+  };
+};
+
+// --- Endpoints de infraestructura ---
+export const infra = {
+  graphNodes: () => jget<any[]>('/infra/graph/nodes'),
+  graphEdges: () => jget<any[]>('/infra/graph/edges'),
+
+  // locations
+  locations: () => jget<Location[]>('/infra/locations'),
+
+  // IMPORTANTE: id es string (y puede tener espacios) → encodeURIComponent
+  locAssets:  (id: string /*, types?: Array<'tank'|'pump'|'valve'|'manifold'> */) =>
+    jget<any[]>(`/infra/locations/${encodeURIComponent(id)}/assets`),
+
+  locSummary: (id: string) =>
+    jget<LocationSummary>(`/infra/locations/${encodeURIComponent(id)}/summary`),
+};
+

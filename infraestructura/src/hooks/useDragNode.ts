@@ -1,17 +1,20 @@
 // src/hooks/useDragNode.ts
 import { useRef, useCallback } from 'react'
-import { byId } from '@/data/graph'
 
 type Opts = {
   id: string
   enabled: boolean
+  /** devuelve la posición actual del nodo (por id) */
+  getPos: (id: string) => { x: number; y: number } | null
+  /** actualiza la posición del nodo (por id) */
+  setPos: (id: string, x: number, y: number) => void
   snap?: number
   onChange?: (x: number, y: number) => void
   onEnd?: () => void
   debug?: boolean
 }
 
-/** Convierte coordenadas de pantalla a coords del viewBox del SVG */
+/** Convierte coords de pantalla a coords del viewBox del SVG */
 function clientToSvg(svg: SVGSVGElement, cx: number, cy: number) {
   const rect = svg.getBoundingClientRect()
   const vb = svg.viewBox.baseVal
@@ -20,7 +23,9 @@ function clientToSvg(svg: SVGSVGElement, cx: number, cy: number) {
   return { x, y }
 }
 
-export default function useDragNode({ id, enabled, snap = 10, onChange, onEnd, debug }: Opts) {
+export default function useDragNode({
+  id, enabled, getPos, setPos, snap = 10, onChange, onEnd, debug,
+}: Opts) {
   const dragging = useRef(false)
   const grabDx = useRef(0)
   const grabDy = useRef(0)
@@ -38,8 +43,8 @@ export default function useDragNode({ id, enabled, snap = 10, onChange, onEnd, d
   const handleMove = useCallback((e: PointerEvent) => {
     if (!dragging.current || !svgRef.current) return
     const svg = svgRef.current
-    const n = byId[id]
-    if (!n) return
+    const cur = getPos(id)
+    if (!cur) return
 
     const { x: mx, y: my } = clientToSvg(svg, e.clientX, e.clientY)
 
@@ -55,12 +60,11 @@ export default function useDragNode({ id, enabled, snap = 10, onChange, onEnd, d
     x = Math.max(vb.x + 10, Math.min(vb.x + vb.width - 10, x))
     y = Math.max(vb.y + 10, Math.min(vb.y + vb.height - 10, y))
 
-    n.x = x
-    n.y = y
+    setPos(id, x, y)
 
     if (debug) console.debug('[drag] move', id, '→', x, y)
     if (onChange) tick(() => onChange(x, y))
-  }, [id, snap, onChange, debug])
+  }, [id, snap, onChange, debug, getPos, setPos])
 
   const handleUp = useCallback((e: PointerEvent) => {
     if (!dragging.current) return
@@ -78,24 +82,20 @@ export default function useDragNode({ id, enabled, snap = 10, onChange, onEnd, d
     svgRef.current = svg
 
     const { x: sx, y: sy } = clientToSvg(svg, e.clientX, e.clientY)
-    const n = byId[id]
-    grabDx.current = (n?.x ?? 0) - sx
-    grabDy.current = (n?.y ?? 0) - sy
+    const cur = getPos(id) || { x: 0, y: 0 }
+    grabDx.current = cur.x - sx
+    grabDy.current = cur.y - sy
 
     dragging.current = true
     if (debug) console.debug('[drag] down', id, 'client=', e.clientX, e.clientY)
 
-    // Intentamos pointer capture, pero igual agregamos listeners globales para máxima robustez
     ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
-
     window.addEventListener('pointermove', handleMove, { passive: true } as any)
     window.addEventListener('pointerup', handleUp, { passive: true } as any)
-
     e.preventDefault()
-  }, [enabled, id, handleMove, handleUp, debug])
+  }, [enabled, id, handleMove, handleUp, debug, getPos])
 
   const onPointerMove = useCallback((e: React.PointerEvent<SVGElement>) => {
-    // fallback: si el browser no emite pointermove global, procesamos acá
     if (!dragging.current) return
     handleMove(e.nativeEvent)
   }, [handleMove])
