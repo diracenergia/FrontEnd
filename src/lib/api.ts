@@ -544,3 +544,39 @@ export const infra = {
     jget<LocationSummary>(`/infra/locations/${encodeURIComponent(id)}/summary`),
 };
 
+// --- NUEVO: tipos backend actuales (IDs numéricos) ---
+export type InfraAssetType = "tank" | "pump" | "valve" | "manifold";
+export type InfraLocation = { id: number; code: string; name: string };
+export type InfraAssetItem = { id: number; name?: string; code?: string };
+export type InfraAssetGroup = { type: InfraAssetType; items: InfraAssetItem[] };
+export type InfraSummary = {
+  location_id: number; location_code: string; location_name: string;
+  assets_total: number; tanks_count: number; pumps_count: number; valves_count: number; manifolds_count: number;
+  alarms_active: number; alarms_critical_active: number;
+  pump_readings_30d?: number | null; tank_readings_30d?: number | null;
+  pumps_last_seen?: string | null;    tanks_last_seen?: string | null;
+};
+export type InfraTree = { location: InfraLocation; summary: InfraSummary; assets: InfraAssetGroup[] };
+
+// --- NUEVO: endpoints numerados (no pisan los viejos) ---
+export const infra2 = {
+  locations: () => jget<InfraLocation[]>('/infra/locations'),
+  locTree:   (id: number) => jget<InfraTree>(`/infra/locations/${id}/tree`),
+  // si querés seguir consultando assets por tipo/loc:
+  locAssets: (id: number) => jget<InfraAssetGroup[]>(`/infra/locations/${id}/assets`),
+};
+
+// --- NUEVO: helper para armar un mapa asset -> location_id (clave 'type:id') ---
+export async function fetchAssetLocationMap(): Promise<Map<string, number>> {
+  const locs = await infra2.locations();
+  const pairs: [string, number][] = [];
+  await Promise.all(
+    locs.map(async (l) => {
+      const tree = await infra2.locTree(l.id);
+      tree.assets.forEach(g => g.items.forEach(a => {
+        pairs.push([`${g.type}:${a.id}`, l.id]);
+      }));
+    })
+  );
+  return new Map(pairs);
+}

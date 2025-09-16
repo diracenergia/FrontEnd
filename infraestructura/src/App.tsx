@@ -352,6 +352,21 @@ export default function App() {
   }
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
+  // --------------------------
+  // Agrupaciones por ubicación (desde backend)
+  // --------------------------
+  const [locGroups, setLocGroups] = useState<Array<{ label: string; ids: string[] }>>([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [groupsError, setGroupsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setGroupsLoading(true);
+    fetchLocationGroups()
+      .then((gs) => setLocGroups(gs))
+      .catch((e) => setGroupsError(String(e?.message || e)))
+      .finally(() => setGroupsLoading(false));
+  }, []);
+
   return (
     <div className="min-h-screen w-full bg-slate-50">
       <style>{`
@@ -472,21 +487,24 @@ export default function App() {
                 onAuxClick={preventMiddleAux}
               />
 
-              {/* Agrupaciones automáticas */}
-              <AutoGroupBox
-                ids={["P1", "P2", "P3", "P4", "P5", "P6", "P7", "MC"]}
-                label="Planta"
-                pad={36}
-                grow={{ right: 30, top: 10, bottom: 14 }}
-              />
-              <AutoGroupBox
-                ids={["TP", "TA", "P8", "P9", "MB"]}
-                label="Tanques principales"
-                pad={34}
-                grow={{ left: 12 }}
-              />
-              <AutoGroupBox ids={["TA1", "TA2", "TA3"]} label="Tanques altos" pad={30} />
-              <AutoGroupBox ids={["VG", "TG"]} label="Distribución por gravedad" pad={28} grow={{ right: 20 }} />
+              {/* Agrupaciones automáticas DESDE BACKEND */}
+              {locGroups.map((g) => (
+                <AutoGroupBox key={g.label} ids={g.ids} label={g.label} pad={32} />
+              ))}
+              {groupsLoading && (
+                <g>
+                  <text x={vb.x + 12} y={vb.y + 24} className="fill-slate-400 text-[12px]">
+                    Cargando agrupaciones…
+                  </text>
+                </g>
+              )}
+              {groupsError && (
+                <g>
+                  <text x={vb.x + 12} y={vb.y + 24} className="fill-red-500 text-[12px]">
+                    Error agrupaciones: {groupsError}
+                  </text>
+                </g>
+              )}
 
               {/* Edges debajo */}
               {edges.map((e) => (
@@ -584,4 +602,42 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+// === Backend infra ===
+const API_INFRA = ((import.meta as any)?.env?.VITE_API_URL || "https://backend-v85n.onrender.com/infra").replace(/\/+$/, "");
+
+// Tipitos mínimos de lo que usamos
+type InfraLocation = { id: number; code: string; name: string };
+type InfraAssetItem = { id: number; name?: string; code?: string };
+type InfraAssetGroup = { type: "tank" | "pump" | "valve" | "manifold"; items: InfraAssetItem[] };
+
+// Construye grupos {label, ids[]} usando códigos que EXISTEN en el grafo (byId)
+async function fetchLocationGroups(): Promise<Array<{ label: string; ids: string[] }>> {
+  // 1) locations
+  const locs: InfraLocation[] = await fetch(`${API_INFRA}/locations`, {
+    headers: { Accept: "application/json" },
+  }).then((r) => r.json());
+
+  // 2) por cada location → assets
+  const groups: Array<{ label: string; ids: string[] }> = [];
+  for (const loc of locs) {
+    const assets: InfraAssetGroup[] = await fetch(`${API_INFRA}/locations/${loc.id}/assets`, {
+      headers: { Accept: "application/json" },
+    }).then((r) => r.json());
+
+    // códigos de assets que existen en el grafo (byId tiene P1, M10, V8, TP, TA, TG, etc.)
+    const ids = Array.from(
+      new Set(
+        assets
+          .flatMap((g) => g.items.map((a) => a.code || "")) // tomamos el code
+          .filter((code) => !!code && (byId as any)[code]) // solo los que están en el diagrama
+      )
+    );
+
+    if (ids.length) {
+      groups.push({ label: loc.name, ids });
+    }
+  }
+  return groups;
 }
