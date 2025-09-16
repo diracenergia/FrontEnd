@@ -224,83 +224,83 @@ export default function App() {
   // Overlay draggable por nodo
   // --------------------------
   const DraggableOverlay: React.FC<{ id: string }> = ({ id }) => {
-    const n = byId[id];
-    const { halfW, halfH } = nodeHalfSize(n?.type ?? "tank");
-    const [pressed, setPressed] = useState(false);
+  const n = byId[id];
+  if (!n) return null;
 
-    const drag = useDragNode({
-      id,
-      enabled: edit,
-      snap: 10,
-      debug: false,
-      onChange: () => {
-        saveLayoutToStorage();
-        scheduleTick();
-      },
-      onEnd: () => {
-        setPressed(false);
-        console.log("[Drag] end", id, "→", { x: byId[id].x, y: byId[id].y });
-      },
-    });
+  const { halfW, halfH } = nodeHalfSize(n.type ?? "tank");
+  const [pressed, setPressed] = useState(false);
 
-    const x = n.x - halfW - 8;
-    const y = n.y - halfH - 8;
-    const w = halfW * 2 + 16;
-    const h = halfH * 2 + 16;
+  // rectángulo que cubre el nodo
+  const x = n.x - halfW - 8;
+  const y = n.y - halfH - 8;
+  const w = halfW * 2 + 16;
+  const h = halfH * 2 + 16;
 
-    const onDown: React.PointerEventHandler<SVGRectElement> = (e) => {
-      // si es middle, no iniciamos drag del nodo -> lo toma el pan del SVG
-      if (e.button === 1) return;
-      setPressed(true);
-      drag.onPointerDown(e as any);
-      console.log("[Drag] start", id);
-    };
+  // Hook reutilizable con listeners globales (robusto en SVG)
+  const drag = useDragNode({
+    id,
+    enabled: edit,                  // sólo en modo edición
+    getPos: (id) => {
+      const node = byId[id];
+      return node ? { x: node.x, y: node.y } : null;
+    },
+    setPos: (id, x, y) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      byId[id].x = x;
+      byId[id].y = y;
+      // pedimos un render (redibuja edges & overlay)
+      scheduleTick();
+    },
+    snap: 10,                       // mismo “snap a 10” de antes
+    onEnd: () => {
+      saveLayoutToStorage();
+      console.log("[Drag] end", id, "→", { x: byId[id].x, y: byId[id].y });
+    },
+    // debug: true,
+  });
 
-    return (
-      <g>
-        {pressed && (
-          <rect
-            x={x - 3}
-            y={y - 3}
-            width={w + 6}
-            height={h + 6}
-            rx={10}
-            fill="none"
-            stroke="rgb(56 189 248)"
-            strokeWidth={2}
-            pointerEvents="none"
-          />
-        )}
+  return (
+    <g>
+      {pressed && (
         <rect
-          x={x}
-          y={y}
-          width={w}
-          height={h}
-          rx={8}
-          fill="black"
-          fillOpacity={0.04}
-          pointerEvents={edit ? ("all" as any) : ("none" as any)}
-          stroke={edit ? (pressed ? "rgb(56 189 248)" : "rgb(203 213 225)") : "none"}
-          strokeWidth={edit ? 1.5 : 0}
-          strokeDasharray={edit ? "4 4" : undefined}
-          style={{ cursor: edit ? (pressed ? "grabbing" : "grab") : "default" }}
-          onPointerDown={onDown}
-          onPointerMove={(e) => drag.onPointerMove(e as any)}
-          onPointerUp={(e) => {
-            setPressed(false);
-            drag.onPointerUp(e as any);
-          }}
-          onPointerCancel={(e) => {
-            setPressed(false);
-            drag.onPointerUp(e as any);
-          }}
-          onLostPointerCapture={() => setPressed(false)}
-          onContextMenu={(e) => e.preventDefault()}
-          onAuxClick={preventMiddleAux}
+          x={x - 3}
+          y={y - 3}
+          width={w + 6}
+          height={h + 6}
+          rx={10}
+          fill="none"
+          stroke="rgb(56 189 248)"
+          strokeWidth={2}
+          pointerEvents="none"
         />
-      </g>
-    );
-  };
+      )}
+
+      <rect
+        x={x}
+        y={y}
+        width={w}
+        height={h}
+        rx={8}
+        fill="black"
+        fillOpacity={0.04}
+        // sólo clickeable en modo edición
+        pointerEvents={edit ? ("all" as any) : ("none" as any)}
+        stroke={edit ? (pressed ? "rgb(56 189 248)" : "rgb(203 213 225)") : "none"}
+        strokeWidth={edit ? 1.5 : 0}
+        strokeDasharray={edit ? "4 4" : undefined}
+        style={{ cursor: edit ? (pressed ? "grabbing" : "grab") : "default", touchAction: "none" }}
+        // Pasamos los eventos al hook y marcamos pressed para el highlight
+        onPointerDown={(e) => { setPressed(true); drag.onPointerDown(e as any); }}
+        onPointerUp={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
+        onPointerCancel={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
+        // evitar menú/contexto/aux
+        onContextMenu={(e) => e.preventDefault()}
+        onAuxClick={(e) => { if ((e as any).button === 1) { e.preventDefault(); e.stopPropagation(); } }}
+      />
+    </g>
+  );
+};
+
 
   // --------------------------
   // Reset de auto-layout
@@ -507,9 +507,14 @@ export default function App() {
               )}
 
               {/* Edges debajo */}
-              {edges.map((e) => (
-                <Edge key={`${e.a}-${e.b}-${tick}`} {...e} />
-              ))}
+              {edges.map((e) => {
+  const A = byId[e.a];
+  const B = byId[e.b];
+  if (!A || !B) return null;
+  if (![A.x, A.y, B.x, B.y].every((v) => Number.isFinite(v))) return null;
+  return <Edge key={`${e.a}-${e.b}-${tick}`} {...e} />;
+})}
+
 
               {/* Nodes + overlay draggable */}
               {NODES.map((n) => {

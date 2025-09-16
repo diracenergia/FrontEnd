@@ -6,10 +6,24 @@ export function GroupBox({
   x, y, w, h, label,
 }: { x:number; y:number; w:number; h:number; label:string }) {
   return (
-    <g>
-      <rect x={x} y={y} width={w} height={h} rx={14} className="fill-slate-50 stroke-slate-200" />
-      <rect x={x} y={y} width={w} height={h} rx={14} fill="none" className="stroke-slate-300" strokeDasharray="6 6" />
-      <text x={x + 12} y={y + 20} className="fill-slate-500 text-[12px]">{label}</text>
+    <g className="loc-group" pointerEvents="none"> {/* ⬅️ evita capturar eventos */}
+      <rect
+        x={x} y={y} width={w} height={h} rx={14}
+        className="fill-slate-50 stroke-slate-200"
+        pointerEvents="none"                       /* ⬅️ por si el <g> no heredara */
+      />
+      <rect
+        x={x} y={y} width={w} height={h} rx={14}
+        fill="none" className="stroke-slate-300" strokeDasharray="6 6"
+        pointerEvents="none"
+      />
+      <text
+        x={x + 12} y={y + 20}
+        className="fill-slate-500 text-[12px]"
+        pointerEvents="none"
+      >
+        {label}
+      </text>
     </g>
   )
 }

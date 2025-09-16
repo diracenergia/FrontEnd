@@ -1,5 +1,5 @@
 import { Routes, Route, Link } from 'react-router-dom'
-import InfraestructuraPage from './pages/InfraestructuraPage'
+import InfraestructuraPage from './components/scada/pages/InfraestructuraPage'
 
 export default function App() {
   return (
