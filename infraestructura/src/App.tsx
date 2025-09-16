@@ -1,16 +1,6 @@
 // src/App.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Layers3,
-  Play,
-  Info,
-  Activity,
-  Gauge,
-  AlertTriangle,
-  Edit3,
-  RotateCcw,
-  Maximize2,
-} from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Layers3, Play, Info, Edit3, RotateCcw, Maximize2 } from "lucide-react";
 
 import Button from "@/components/ui/Button";
 import Legend from "@/components/Legend";
@@ -63,11 +53,27 @@ function nodesBBox(nodes = NODES) {
 export default function App() {
   const [scenario, setScenario] = useState<keyof typeof SCENARIOS>("Normal");
   const [edit, setEdit] = useState(false);
-  const [tick, setTick] = useState(0); // re-render (edges / group boxes)
+  const [tick, setTick] = useState(0);
   const edges = useEdgesForScenario(scenario);
 
+  // === Reportar altura al padre (evita doble scroll) ===
+  useEffect(() => {
+    const reportHeight = () => {
+      const h = document.documentElement.scrollHeight;
+      window.parent?.postMessage({ type: "EMBED_HEIGHT", height: h }, "*");
+    };
+    reportHeight();
+    const ro = new ResizeObserver(reportHeight);
+    ro.observe(document.documentElement);
+    window.addEventListener("load", reportHeight);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("load", reportHeight);
+    };
+  }, []);
+
   // --------------------------
-  // ViewBox (pan & zoom state)
+  // ViewBox (pan & zoom)
   // --------------------------
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [vb, setVb] = useState<ViewBox>(() => {
@@ -77,7 +83,6 @@ export default function App() {
   const vbRef = useRef(vb);
   vbRef.current = vb;
 
-  // rAF gate para reducir renders
   const rafRef = useRef<number | null>(null);
   const scheduleTick = () => {
     if (rafRef.current == null) {
@@ -88,14 +93,11 @@ export default function App() {
     }
   };
 
-  // fit to content (al montar y en doble click)
   const fitToContent = () => {
     const bb = nodesBBox();
     setVb({ x: bb.minX, y: bb.minY, w: bb.w, h: bb.h });
-    console.log("[App] fitToContent →", { vb: { x: bb.minX, y: bb.minY, w: bb.w, h: bb.h } });
   };
 
-  // helper para aplicar zoom centrado bajo el cursor
   function zoomBy(deltaY: number, clientX: number, clientY: number) {
     const svg = svgRef.current!;
     const rect = svg.getBoundingClientRect();
@@ -104,7 +106,7 @@ export default function App() {
     const px = x + ((clientX - rect.left) / rect.width) * w;
     const py = y + ((clientY - rect.top) / rect.height) * h;
 
-    const k = Math.pow(1.0015, deltaY); // deltaY>0 aleja, <0 acerca
+    const k = Math.pow(1.0015, deltaY);
     const nw = Math.max(200, Math.min(50000, w * k));
     const nh = Math.max(200, Math.min(50000, h * k));
 
@@ -114,38 +116,23 @@ export default function App() {
     setVb({ x: nx, y: ny, w: nw, h: nh });
   }
 
-  // Mount + listeners
   useEffect(() => {
-    console.groupCollapsed("[App] mount");
-    console.log("nodes", NODES.length, "edges", edges.length, "scenario", scenario);
-    console.groupEnd();
-
-    // cargar layout guardado (si existe)
     const loaded = loadLayoutFromStorage();
-    if (loaded) {
-      console.log("[App] layout cargado desde storage");
-      scheduleTick();
-    }
-
-    // auto-fit inicial
+    if (loaded) scheduleTick();
     fitToContent();
 
-    // listener nativo para Ctrl/⌘ + wheel (passive:false)
     const svg = svgRef.current;
     if (!svg) return;
 
     const onWheelNative = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
-        e.preventDefault(); // evita zoom de la página
+        e.preventDefault();
         zoomBy(e.deltaY, e.clientX, e.clientY);
       }
     };
     svg.addEventListener("wheel", onWheelNative, { passive: false });
 
-    // re-fit al cambiar tamaño del contenedor (restaurar ventana)
-    const ro = new ResizeObserver(() => {
-      fitToContent();
-    });
+    const ro = new ResizeObserver(() => fitToContent());
     const host = svg.parentElement;
     if (host) ro.observe(host);
 
@@ -155,19 +142,6 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Log de cambios de escenario y edges
-  useEffect(() => {
-    console.groupCollapsed("[App] scenario change");
-    console.log("scenario:", scenario);
-    console.log("edges:", edges.length);
-    console.groupEnd();
-  }, [scenario, edges.length]);
-
-  // Log de cambios de viewBox
-  useEffect(() => {
-    console.log("[App] viewBox", vb);
-  }, [vb]);
 
   // --------------------------
   // Pan con ruedita PRESIONADA
@@ -191,16 +165,12 @@ export default function App() {
     if (!panning.current.active) return;
     const svg = svgRef.current!;
     const rect = svg.getBoundingClientRect();
-
     const dxClient = e.clientX - panning.current.start.x;
     const dyClient = e.clientY - panning.current.start.y;
-
     const sx = vbRef.current.w / rect.width;
     const sy = vbRef.current.h / rect.height;
-
     const nx = panning.current.vb0.x - dxClient * sx;
     const ny = panning.current.vb0.y - dyClient * sy;
-
     setVb((prev) => ({ ...prev, x: nx, y: ny }));
   }
 
@@ -213,7 +183,6 @@ export default function App() {
   }
 
   const onSvgPointerDown: React.PointerEventHandler<SVGSVGElement> = (e) => {
-    // Middle button = pan (sólo mientras presionado)
     if (e.button === 1) startPan(e);
   };
   const onSvgPointerMove: React.PointerEventHandler<SVGSVGElement> = (e) => movePan(e);
@@ -224,89 +193,77 @@ export default function App() {
   // Overlay draggable por nodo
   // --------------------------
   const DraggableOverlay: React.FC<{ id: string }> = ({ id }) => {
-  const n = byId[id];
-  if (!n) return null;
+    const n = byId[id];
+    if (!n) return null;
+    const { halfW, halfH } = nodeHalfSize(n.type ?? "tank");
+    const [pressed, setPressed] = useState(false);
 
-  const { halfW, halfH } = nodeHalfSize(n.type ?? "tank");
-  const [pressed, setPressed] = useState(false);
+    const x = n.x - halfW - 8;
+    const y = n.y - halfH - 8;
+    const w = halfW * 2 + 16;
+    const h = halfH * 2 + 16;
 
-  // rectángulo que cubre el nodo
-  const x = n.x - halfW - 8;
-  const y = n.y - halfH - 8;
-  const w = halfW * 2 + 16;
-  const h = halfH * 2 + 16;
+    const drag = useDragNode({
+      id,
+      enabled: edit,
+      getPos: (id) => {
+        const node = byId[id];
+        return node ? { x: node.x, y: node.y } : null;
+      },
+      setPos: (id, x, y) => {
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        byId[id].x = x;
+        byId[id].y = y;
+        scheduleTick();
+      },
+      snap: 10,
+      onEnd: () => {
+        saveLayoutToStorage();
+      },
+    });
 
-  // Hook reutilizable con listeners globales (robusto en SVG)
-  const drag = useDragNode({
-    id,
-    enabled: edit,                  // sólo en modo edición
-    getPos: (id) => {
-      const node = byId[id];
-      return node ? { x: node.x, y: node.y } : null;
-    },
-    setPos: (id, x, y) => {
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      byId[id].x = x;
-      byId[id].y = y;
-      // pedimos un render (redibuja edges & overlay)
-      scheduleTick();
-    },
-    snap: 10,                       // mismo “snap a 10” de antes
-    onEnd: () => {
-      saveLayoutToStorage();
-      console.log("[Drag] end", id, "→", { x: byId[id].x, y: byId[id].y });
-    },
-    // debug: true,
-  });
-
-  return (
-    <g>
-      {pressed && (
+    return (
+      <g>
+        {pressed && (
+          <rect
+            x={x - 3}
+            y={y - 3}
+            width={w + 6}
+            height={h + 6}
+            rx={10}
+            fill="none"
+            stroke="rgb(56 189 248)"
+            strokeWidth={2}
+            pointerEvents="none"
+          />
+        )}
         <rect
-          x={x - 3}
-          y={y - 3}
-          width={w + 6}
-          height={h + 6}
-          rx={10}
-          fill="none"
-          stroke="rgb(56 189 248)"
-          strokeWidth={2}
-          pointerEvents="none"
+          x={x}
+          y={y}
+          width={w}
+          height={h}
+          rx={8}
+          fill="black"
+          fillOpacity={0.04}
+          pointerEvents={edit ? ("all" as any) : ("none" as any)}
+          stroke={edit ? (pressed ? "rgb(56 189 248)" : "rgb(203 213 225)") : "none"}
+          strokeWidth={edit ? 1.5 : 0}
+          strokeDasharray={edit ? "4 4" : undefined}
+          style={{ cursor: edit ? (pressed ? "grabbing" : "grab") : "default", touchAction: "none" }}
+          onPointerDown={(e) => { setPressed(true); drag.onPointerDown(e as any); }}
+          onPointerUp={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
+          onPointerCancel={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
+          onContextMenu={(e) => e.preventDefault()}
+          onAuxClick={(e) => { if ((e as any).button === 1) { e.preventDefault(); e.stopPropagation(); } }}
         />
-      )}
-
-      <rect
-        x={x}
-        y={y}
-        width={w}
-        height={h}
-        rx={8}
-        fill="black"
-        fillOpacity={0.04}
-        // sólo clickeable en modo edición
-        pointerEvents={edit ? ("all" as any) : ("none" as any)}
-        stroke={edit ? (pressed ? "rgb(56 189 248)" : "rgb(203 213 225)") : "none"}
-        strokeWidth={edit ? 1.5 : 0}
-        strokeDasharray={edit ? "4 4" : undefined}
-        style={{ cursor: edit ? (pressed ? "grabbing" : "grab") : "default", touchAction: "none" }}
-        // Pasamos los eventos al hook y marcamos pressed para el highlight
-        onPointerDown={(e) => { setPressed(true); drag.onPointerDown(e as any); }}
-        onPointerUp={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
-        onPointerCancel={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
-        // evitar menú/contexto/aux
-        onContextMenu={(e) => e.preventDefault()}
-        onAuxClick={(e) => { if ((e as any).button === 1) { e.preventDefault(); e.stopPropagation(); } }}
-      />
-    </g>
-  );
-};
-
+      </g>
+    );
+  };
 
   // --------------------------
-  // Reset de auto-layout
+  // Reset / Export / Import
   // --------------------------
   function resetAuto() {
-    console.log("[Layout] reset auto");
     const fresh = computeAutoLayout(BASE_NODES);
     for (const f of fresh) {
       if (byId[f.id]) {
@@ -319,12 +276,8 @@ export default function App() {
     fitToContent();
   }
 
-  // --------------------------
-  // Export / Import
-  // --------------------------
   function doExportJSON() {
     const data = exportLayout();
-    console.log("[Layout] export JSON", data);
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -342,9 +295,7 @@ export default function App() {
         saveLayoutToStorage();
         scheduleTick();
         fitToContent();
-        console.log("[Layout] import OK", arr);
-      } catch (err) {
-        console.error("[Layout] import ERROR", err);
+      } catch {
         alert("Archivo inválido");
       }
     };
@@ -368,7 +319,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="min-h-screen w-full bg-slate-50">
+    <div className="w-full bg-slate-50">
       <style>{`
         @keyframes dash { to { stroke-dashoffset: -24; } }
         .flowing { stroke-dasharray: 4 8; animation: dash 1.4s linear infinite; opacity: 0.9; }
@@ -380,7 +331,7 @@ export default function App() {
         <div className="mx-auto max-w-[1600px] px-6 py-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <Layers3 className="h-5 w-5 text-slate-700" />
-            <h1 className="text-lg font-semibold text-slate-900">Acuaducto — Vista General (hardcode)</h1>
+
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {Object.keys(SCENARIOS).map((name) => (
@@ -432,9 +383,8 @@ export default function App() {
         </div>
       </div>
 
-      {/* Canvas + paneles abajo */}
-      <div className="mx-auto max-w-[1600px] px-6 py-6 space-y-6">
-        {/* Canvas */}
+      {/* Canvas */}
+      <div className="mx-auto max-w-[1600px] px-6 py-6">
         <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-200">
           <div className="mb-3 flex items-center justify-between">
             <Legend />
@@ -451,8 +401,8 @@ export default function App() {
             <svg
               ref={svgRef}
               viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
-              className="w-full h-[72vh] bg-white"
-              style={{ touchAction: "none" }}
+              className="w-full"
+              style={{ height: "720px", touchAction: "none" }} // altura fija (ajustable)
               onAuxClick={preventMiddleAux}
               onPointerDown={onSvgPointerDown}
               onPointerMove={onSvgPointerMove}
@@ -461,15 +411,7 @@ export default function App() {
               onDoubleClick={fitToContent}
             >
               <defs>
-                <marker
-                  id="arrow"
-                  viewBox="0 0 10 10"
-                  refX="8"
-                  refY="5"
-                  markerWidth="6"
-                  markerHeight="6"
-                  orient="auto-start-reverse"
-                >
+                <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                   <path d="M 0 0 L 10 5 L 0 10 z" className="fill-current text-slate-400" />
                 </marker>
                 <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -477,7 +419,7 @@ export default function App() {
                 </pattern>
               </defs>
 
-              {/* fondo cuadriculado grande para pan infinito */}
+              {/* fondo cuadriculado grande */}
               <rect
                 x={vb.x - vb.w * 5}
                 y={vb.y - vb.h * 5}
@@ -508,13 +450,12 @@ export default function App() {
 
               {/* Edges debajo */}
               {edges.map((e) => {
-  const A = byId[e.a];
-  const B = byId[e.b];
-  if (!A || !B) return null;
-  if (![A.x, A.y, B.x, B.y].every((v) => Number.isFinite(v))) return null;
-  return <Edge key={`${e.a}-${e.b}-${tick}`} {...e} />;
-})}
-
+                const A = byId[e.a];
+                const B = byId[e.b];
+                if (!A || !B) return null;
+                if (![A.x, A.y, B.x, B.y].every((v) => Number.isFinite(v))) return null;
+                return <Edge key={`${e.a}-${e.b}-${tick}`} {...e} />;
+              })}
 
               {/* Nodes + overlay draggable */}
               {NODES.map((n) => {
@@ -537,72 +478,6 @@ export default function App() {
               })}
             </svg>
           </div>
-
-          <div className="mt-3 text-sm text-slate-700">{SCENARIOS[scenario].note}</div>
-        </div>
-
-        {/* Paneles abajo */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-2 flex items-center gap-2 text-slate-800 font-semibold">
-              <Activity className="h-4 w-4" /> Estado de Bombas
-            </div>
-            <ul className="space-y-2 text-sm">
-              {NODES.filter((n) => n.type === "pump").map((p) => (
-                <li key={p.id} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`inline-block h-2.5 w-2.5 rounded-full ${
-                        p.status === "on"
-                          ? "bg-emerald-500"
-                          : p.status === "standby"
-                          ? "bg-amber-500"
-                          : p.status === "fault"
-                          ? "bg-rose-600"
-                          : "bg-slate-400"
-                      }`}
-                    />
-                    {p.name}
-                  </div>
-                  <span className="text-slate-600">{p.kW} kW</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-2 flex items-center gap-2 text-slate-800 font-semibold">
-              <Gauge className="h-4 w-4" /> Niveles de Tanque
-            </div>
-            <ul className="space-y-2 text-sm">
-              {NODES.filter((n) => n.type === "tank").map((t) => (
-                <li key={t.id} className="flex items-center justify-between">
-                  <span>{t.name}</span>
-                  <span className="tabular-nums font-medium">{(((t.level ?? 0) * 100) | 0).toString()}%</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-2 flex items-center gap-2 text-slate-800 font-semibold">
-              <AlertTriangle className="h-4 w-4" /> Alarmas (demo)
-            </div>
-            <ul className="space-y-2 text-sm">
-              <li className="flex items-center justify-between">
-                <span>P7 fuera de servicio</span>
-                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs bg-rose-100 text-rose-700">
-                  Crítica
-                </span>
-              </li>
-              <li className="flex items-center justify-between">
-                <span>V-TA3 en estrangulación</span>
-                <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs bg-amber-100 text-amber-800">
-                  Atención
-                </span>
-              </li>
-            </ul>
-          </div>
         </div>
       </div>
     </div>
@@ -611,38 +486,31 @@ export default function App() {
 
 // === Backend infra ===
 const API_INFRA = ((import.meta as any)?.env?.VITE_API_URL || "https://backend-v85n.onrender.com/infra").replace(/\/+$/, "");
-
-// Tipitos mínimos de lo que usamos
 type InfraLocation = { id: number; code: string; name: string };
 type InfraAssetItem = { id: number; name?: string; code?: string };
 type InfraAssetGroup = { type: "tank" | "pump" | "valve" | "manifold"; items: InfraAssetItem[] };
 
-// Construye grupos {label, ids[]} usando códigos que EXISTEN en el grafo (byId)
 async function fetchLocationGroups(): Promise<Array<{ label: string; ids: string[] }>> {
-  // 1) locations
   const locs: InfraLocation[] = await fetch(`${API_INFRA}/locations`, {
     headers: { Accept: "application/json" },
   }).then((r) => r.json());
 
-  // 2) por cada location → assets
   const groups: Array<{ label: string; ids: string[] }> = [];
   for (const loc of locs) {
     const assets: InfraAssetGroup[] = await fetch(`${API_INFRA}/locations/${loc.id}/assets`, {
       headers: { Accept: "application/json" },
     }).then((r) => r.json());
 
-    // códigos de assets que existen en el grafo (byId tiene P1, M10, V8, TP, TA, TG, etc.)
     const ids = Array.from(
       new Set(
         assets
-          .flatMap((g) => g.items.map((a) => a.code || "")) // tomamos el code
-          .filter((code) => !!code && (byId as any)[code]) // solo los que están en el diagrama
+          .flatMap((g) => g.items.map((a) => a.code || ""))
+          .filter((code) => !!code && (byId as any)[code]
+        )
       )
     );
 
-    if (ids.length) {
-      groups.push({ label: loc.name, ids });
-    }
+    if (ids.length) groups.push({ label: loc.name, ids });
   }
   return groups;
 }

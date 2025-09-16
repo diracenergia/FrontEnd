@@ -15,7 +15,7 @@ export default function Legend() {
       <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs bg-sky-100 text-sky-700">
         <span className="h-2 w-2 rounded-full bg-sky-600 inline-block" /> Flujo
       </span>
-      <span className="text-[10px] text-slate-500">Grosor de línea ≈ diámetro</span>
+
     </div>
   )
 }
