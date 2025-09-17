@@ -482,8 +482,13 @@ useEffect(() => {
       },
       snap: 10,
       onEnd: () => {
-        saveLayoutToStorage();
-      },
+  saveLayoutToStorage(); // backup local
+  const n = byId[id];
+  if (n && Number.isFinite(n.x) && Number.isFinite(n.y)) {
+    saveNodePosToBackend(id, n.x, n.y);
+  }
+},
+
     });
 
     return (
