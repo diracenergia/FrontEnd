@@ -174,6 +174,41 @@ async function fetchJSON<T>(url: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+// Guardado de posición en la DB (autosave)
+async function saveNodePosToBackend(id: string, x: number, y: number) {
+  try {
+    const API_INFRA = getInfraBase();
+    const headers: HeadersInit = { ...infraHeaders(), "Content-Type": "application/json" };
+    const body = JSON.stringify([{ id, x, y }]);
+    const r = await fetch(`${API_INFRA}/layout`, { method: "POST", headers, body });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`POST /layout -> ${r.status} ${r.statusText} ${t}`);
+    }
+  } catch (e) {
+    console.warn("[EMBED] No se pudo guardar el layout en backend:", e);
+  }
+}
+
+/* ============================
+   API graph types + helpers nuevos
+   ============================ */
+type ApiNode = {
+  id?: string;
+  type: 'tank' | 'pump' | 'valve' | 'manifold';
+  name: string;
+  level?: number | null;
+  capacity?: number | null;
+  status?: 'on'|'standby'|'fault'|'unknown'|null;
+  kW?: number | null;
+  state?: 'open'|'closed'|'throttle'|null;
+  x?: number; y?: number;
+  code?: string | null;
+  asset_id?: number;
+};
+type ApiGraph = { nodes: ApiNode[]; edges: string[] };
+type AB = { a: string; b: string };
+
 /* ============================
    Utils de UI
    ============================ */
@@ -210,7 +245,13 @@ export default function App() {
   const [scenario, setScenario] = useState<keyof typeof SCENARIOS>("Normal");
   const [edit, setEdit] = useState(false);
   const [tick, setTick] = useState(0);
-  const edges = useEdgesForScenario(scenario);
+
+  // Escenario hardcodeado original
+  const edgesScenario = useEdgesForScenario(scenario);
+
+  // Edges que vengan del backend (si hay, pisan a las del escenario)
+  const [edgesFromApi, setEdgesFromApi] = useState<AB[]>([]);
+  const edges = edgesFromApi.length ? edgesFromApi : edgesScenario;
 
   // escucha cambios de config (cuando el host manda EMBED_CONFIG)
   const [configTick, setConfigTick] = useState(0);
@@ -357,7 +398,69 @@ export default function App() {
   const onSvgPointerCancel: React.PointerEventHandler<SVGSVGElement> = (e) => endPan(e);
 
   // --------------------------
-  // Overlay draggable por nodo
+  // Cargar GRAFO DESDE BACKEND y re-hidratar NODES/byId + edges
+  // --------------------------
+  useEffect(() => {
+    (async () => {
+      try {
+        const API_INFRA = getInfraBase();
+        const data = await fetchJSON<ApiGraph>(`${API_INFRA}/graph`);
+
+        // 1) mapear nodos API -> formato front (⚠️ usar ID EXACTO del backend)
+        let mapped = (data.nodes || []).map((n) => {
+          const id = n.id || (n.code ? `${n.type}:${n.code}` : `${n.type}_${n.asset_id ?? ''}`);
+          const base: any = {
+            id,
+            type: n.type,
+            name: n.name,
+            // guardamos el code para agrupaciones por ubicación
+            code: n.code ?? (typeof id === 'string' && id.includes(':') ? id.split(':')[1] : undefined),
+            x: Number.isFinite(n.x) ? (n.x as number) : 0,
+            y: Number.isFinite(n.y) ? (n.y as number) : 0,
+          };
+          if (n.type === 'tank')  { base.level = n.level ?? null; base.capacity = n.capacity ?? null; }
+          if (n.type === 'pump')  { base.status = n.status ?? 'unknown'; base.kW = n.kW ?? null; }
+          if (n.type === 'valve') { base.state  = n.state  ?? 'open'; }
+          return base;
+        });
+
+        // 2) autolayout si no vinieron posiciones
+        const needLayout = mapped.some(m => !Number.isFinite(m.x) || !Number.isFinite(m.y));
+        if (needLayout) mapped = computeAutoLayout(mapped);
+
+        // 3) re-hidratar estructuras mutables exportadas
+        (NODES as any).length = 0;
+        (NODES as any).push(...mapped);
+        Object.keys(byId).forEach(k => delete (byId as any)[k]);
+        for (const n of mapped) (byId as any)[n.id] = n;
+
+        // 4) parsear edges "SRC>DST" a {a,b} usando IDs tal cual del backend
+        const parsed: AB[] = (data.edges || []).map((s) => {
+          const [aRaw, bRaw] = String(s).split('>');
+          return { a: aRaw, b: bRaw };
+        });
+
+        // (opcional) diagnóstico de extremos faltantes
+        const missing = parsed.filter(e => !(byId as any)[e.a] || !(byId as any)[e.b]);
+        if (missing.length) {
+          console.warn('[EMBED] Edges con extremos no encontrados (muestra):', missing.slice(0, 10), '… total:', missing.length);
+        }
+
+        setEdgesFromApi(parsed);
+
+        // 5) fit al contenido
+        fitToContent();
+
+        console.info('[EMBED] Graph cargado:', { nodes: mapped.length, edges: parsed.length });
+      } catch (e) {
+        console.warn('[EMBED] Backend graph fallback → usando hardcoded:', e);
+        setEdgesFromApi([]); // usamos escenarios locales
+      }
+    })();
+  }, [configTick]);
+
+  // --------------------------
+  // Overlay draggable por nodo (con autosave a DB)
   // --------------------------
   const DraggableOverlay: React.FC<{ id: string }> = ({ id }) => {
     const n = byId[id];
@@ -385,7 +488,11 @@ export default function App() {
       },
       snap: 10,
       onEnd: () => {
-        saveLayoutToStorage();
+        saveLayoutToStorage(); // backup local
+        const n = byId[id];
+        if (n && Number.isFinite(n.x) && Number.isFinite(n.y)) {
+          saveNodePosToBackend(id, n.x, n.y);
+        }
       },
     });
 
@@ -445,7 +552,8 @@ export default function App() {
   // Reset / Export / Import
   // --------------------------
   function resetAuto() {
-    const fresh = computeAutoLayout(BASE_NODES);
+    // Si querés volver al layout "demo", usá BASE_NODES en vez de NODES
+    const fresh = computeAutoLayout(NODES);
     for (const f of fresh) {
       if (byId[f.id]) {
         byId[f.id].x = f.x;
@@ -501,6 +609,14 @@ export default function App() {
     (async () => {
       try {
         const locs = await fetchJSON<InfraLocation[]>(`${API_INFRA}/locations`);
+
+        // índice code -> id (id es 'type:code' o 'type_<id>' ya presente en byId)
+        const codeIndex = new Map<string, string>();
+        for (const n of NODES as any[]) {
+          const code = n.code ?? (typeof n.id === 'string' && n.id.includes(':') ? n.id.split(':')[1] : undefined);
+          if (code) codeIndex.set(code, n.id);
+        }
+
         const groups: Array<{ label: string; ids: string[] }> = [];
 
         for (const loc of locs) {
@@ -509,7 +625,8 @@ export default function App() {
             new Set(
               assets
                 .flatMap((g) => g.items.map((a) => a.code || ""))
-                .filter((code) => !!code)
+                .map((code) => codeIndex.get(code) || "")
+                .filter((id) => !!id && (byId as any)[id])
             )
           );
           if (ids.length) groups.push({ label: loc.name, ids });
@@ -652,7 +769,7 @@ export default function App() {
                 </g>
               )}
 
-              {/* Edges debajo */}
+              {/* Edges debajo: si vino backend, usa esas; si no, usa escenario */}
               {edges.map((e) => {
                 const A = byId[e.a];
                 const B = byId[e.b];
@@ -689,7 +806,7 @@ export default function App() {
 }
 
 /* ============================
-   Tipos para infra backend
+   Tipos para infra backend (agrupaciones)
    ============================ */
 type InfraLocation = { id: number; code: string; name: string };
 type InfraAssetItem = { id: number; name?: string; code?: string };
