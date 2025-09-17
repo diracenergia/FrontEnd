@@ -18,9 +18,165 @@ import {
   loadLayoutFromStorage,
 } from "./layout/layoutIO";
 
-// --------------------------
-// Utils
-// --------------------------
+/* ========= Bootstrap de configuración para iframes ========= */
+
+const CONFIG_EVENT = "EMBED_CONFIG_UPDATED";
+function notifyConfigUpdated() {
+  try { window.dispatchEvent(new Event(CONFIG_EVENT)); } catch {}
+}
+
+// 1) Leer config de la URL (?api_base=&api_key=&org_id=)
+function readConfigFromQuery() {
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    const apiBase = sp.get("api_base") || sp.get("apiBase");
+    const apiKey  = sp.get("api_key")  || sp.get("apiKey");
+    const orgId   = sp.get("org_id")   || sp.get("orgId");
+    if (apiBase || apiKey || orgId) {
+      console.group("[EMBED][QUERY] Config recibida por query");
+      console.log("apiBase:", apiBase);
+      console.log("apiKey:", apiKey ? "(set)" : "(missing)");
+      console.log("orgId:", orgId);
+      console.groupEnd();
+    }
+    return { apiBase, apiKey, orgId };
+  } catch {
+    return {};
+  }
+}
+
+// 2) Guardar en localStorage de ESTE origen (iframe)
+function persistConfig({ apiBase, apiKey, orgId }: { apiBase?: string | null; apiKey?: string | null; orgId?: string | null; }) {
+  try {
+    if (apiBase) localStorage.setItem("apiBase", String(apiBase));
+    if (apiKey)  localStorage.setItem("apiKey",  String(apiKey));
+    if (orgId)   localStorage.setItem("orgId",   String(orgId));
+    console.group("[EMBED] persistConfig");
+    console.log("apiBase:", apiBase);
+    console.log("apiKey:", apiKey ? "(set)" : "(missing)");
+    console.log("orgId:", orgId);
+    console.groupEnd();
+    notifyConfigUpdated();
+  } catch {}
+}
+
+// 3) Handshake con el padre: el iframe pide config y acepta recibirla
+(function setupEmbedConfigHandshake() {
+  const q = readConfigFromQuery();
+  if (q.apiBase || q.apiKey || q.orgId) persistConfig(q);
+
+  window.addEventListener("message", (ev) => {
+    const data = ev?.data || {};
+    if (data?.type === "EMBED_CONFIG" && (data.apiBase || data.apiKey || data.orgId)) {
+      console.group("[EMBED][PM] EMBED_CONFIG recibido via postMessage");
+      console.log("data.apiBase:", data.apiBase);
+      console.log("data.apiKey:", data.apiKey ? "(set)" : "(missing)");
+      console.log("data.orgId:", data.orgId);
+      console.groupEnd();
+      persistConfig(data);
+      window.parent?.postMessage({ type: "EMBED_CONFIG_ACK" }, "*");
+    }
+  });
+
+  console.log("[EMBED] Enviando EMBED_READY al host…");
+  window.parent?.postMessage({ type: "EMBED_READY" }, "*");
+})();
+
+/* ============================
+   Helpers de configuración (sin lib/api)
+   ============================ */
+function envAny(): any {
+  return (import.meta as any)?.env ?? {};
+}
+function trimSlash(s: string) {
+  return String(s || "").replace(/\/+$/, "");
+}
+function ensureInfraBase(httpBase: string) {
+  const base = trimSlash(httpBase);
+  return base.endsWith("/infra") ? base : `${base}/infra`;
+}
+// === reemplazar estas helpers ===
+function getHttpDefault(): string {
+  // Si estamos en dev de Vite (5173/5174/5175), forzamos backend local
+  const origin = typeof window !== "undefined" ? trimSlash(window.location.origin) : "";
+  const isViteDev = /^http:\/\/(localhost|127\.0\.0\.1):517\d$/i.test(origin);
+  if (isViteDev) {
+    console.warn("[EMBED][WARN] Origin parece un dev-server de Vite:", origin, " → usando backend http://127.0.0.1:8000");
+    return "http://127.0.0.1:8000";
+  }
+  // Si no es Vite dev, dejamos el origin (útil en prod cuando front y back comparten host)
+  return origin || "http://127.0.0.1:8000";
+}
+
+/** Base HTTP para /infra (ENV > LS > default coherente) */
+function getInfraBase(): string {
+  const e = envAny();
+  const envBase = trimSlash(e?.VITE_API_URL || e?.VITE_API_HTTP_URL || "");
+  const lsBase  = typeof localStorage !== "undefined" ? trimSlash(localStorage.getItem("apiBase") || "") : "";
+  const base    = trimSlash(envBase || lsBase || getHttpDefault());
+  const finalBase = ensureInfraBase(base);
+  if (/^http:\/\/(localhost|127\.0\.0\.1):517\d\/infra$/i.test(finalBase)) {
+    console.warn("[EMBED][WARN] La base apunta al dev-server de Vite:", finalBase, " → esto dará 404. Configurá api_base o VITE_API_URL.");
+  }
+  return finalBase;
+}
+
+/** API Key (ENV > LS > sin fallback) */
+function getApiKey(): string {
+  const e = envAny();
+  const envKey = String(e?.VITE_API_KEY || "");
+  const lsKey  = typeof localStorage !== "undefined" ? String(localStorage.getItem("apiKey") || "") : "";
+  const key = envKey || lsKey || "";
+  if (!key) {
+    console.warn("[EMBED][WARN] API Key ausente. En tests podés pasarla por ?api_key=... o via postMessage EMBED_CONFIG.");
+  }
+  return key;
+}
+
+/** Org Id (ENV > LS > default "1" como en lib/api.ts) */
+function getOrgId(): string {
+  const e = envAny();
+  const raw =
+    e?.VITE_ORG_ID ??
+    (typeof localStorage !== "undefined" ? localStorage.getItem("orgId") : null);
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? String(n) : "1";
+}
+/** Headers comunes para backend */
+function infraHeaders(): HeadersInit {
+  const h: Record<string, string> = { Accept: "application/json" };
+  const key = getApiKey();
+  if (key) {
+    h["X-API-Key"] = key;
+    h["Authorization"] = `Bearer ${key}`; // compat
+  }
+  const org = getOrgId();
+  if (org) h["X-Org-Id"] = org;
+  return h;
+}
+async function fetchJSON<T>(url: string): Promise<T> {
+  const headers = infraHeaders();
+  console.groupCollapsed("[FETCH] GET", url);
+  console.log("base:", getInfraBase());
+  console.log("orgId:", getOrgId());
+  console.log("apiKey:", getApiKey() ? "(set)" : "(missing)");
+  console.log("headers:", headers);
+  console.groupEnd();
+
+  const r = await fetch(url, { headers, mode: "cors" });
+  if (!r.ok) {
+    let text = "";
+    try { text = await r.text(); } catch {}
+    const diag = `(${r.status}) ${r.statusText} • base=${getInfraBase()} • org=${getOrgId()} • key=${getApiKey() ? "set" : "missing"}`;
+    console.error("[FETCH][ERROR]", url, diag, text);
+    throw new Error(`${diag}${text ? " • " + text : ""}`);
+  }
+  return r.json() as Promise<T>;
+}
+
+/* ============================
+   Utils de UI
+   ============================ */
 const preventMiddleAux: React.MouseEventHandler<any> = (e) => {
   if ((e as any).button === 1) {
     e.preventDefault();
@@ -55,6 +211,17 @@ export default function App() {
   const [edit, setEdit] = useState(false);
   const [tick, setTick] = useState(0);
   const edges = useEdgesForScenario(scenario);
+
+  // escucha cambios de config (cuando el host manda EMBED_CONFIG)
+  const [configTick, setConfigTick] = useState(0);
+  useEffect(() => {
+    const onCfg = () => {
+      console.log("[EMBED] Config actualizada, reintentando cargas…");
+      setConfigTick((t) => t + 1);
+    };
+    window.addEventListener(CONFIG_EVENT, onCfg);
+    return () => window.removeEventListener(CONFIG_EVENT, onCfg);
+  }, []);
 
   // === Reportar altura al padre (evita doble scroll) ===
   useEffect(() => {
@@ -250,11 +417,25 @@ export default function App() {
           strokeWidth={edit ? 1.5 : 0}
           strokeDasharray={edit ? "4 4" : undefined}
           style={{ cursor: edit ? (pressed ? "grabbing" : "grab") : "default", touchAction: "none" }}
-          onPointerDown={(e) => { setPressed(true); drag.onPointerDown(e as any); }}
-          onPointerUp={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
-          onPointerCancel={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
+          onPointerDown={(e) => {
+            setPressed(true);
+            drag.onPointerDown(e as any);
+          }}
+          onPointerUp={(e) => {
+            setPressed(false);
+            drag.onPointerUp(e as any);
+          }}
+          onPointerCancel={(e) => {
+            setPressed(false);
+            drag.onPointerUp(e as any);
+          }}
           onContextMenu={(e) => e.preventDefault()}
-          onAuxClick={(e) => { if ((e as any).button === 1) { e.preventDefault(); e.stopPropagation(); } }}
+          onAuxClick={(e) => {
+            if ((e as any).button === 1) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }}
         />
       </g>
     );
@@ -311,12 +492,40 @@ export default function App() {
   const [groupsError, setGroupsError] = useState<string | null>(null);
 
   useEffect(() => {
+    const API_INFRA = getInfraBase();
+    console.group("[EMBED] Cargando agrupaciones");
+    console.log("API_INFRA:", API_INFRA);
+    console.groupEnd();
+
     setGroupsLoading(true);
-    fetchLocationGroups()
-      .then((gs) => setLocGroups(gs))
-      .catch((e) => setGroupsError(String(e?.message || e)))
-      .finally(() => setGroupsLoading(false));
-  }, []);
+    (async () => {
+      try {
+        const locs = await fetchJSON<InfraLocation[]>(`${API_INFRA}/locations`);
+        const groups: Array<{ label: string; ids: string[] }> = [];
+
+        for (const loc of locs) {
+          const assets = await fetchJSON<InfraAssetGroup[]>(`${API_INFRA}/locations/${loc.id}/assets`);
+          const ids = Array.from(
+            new Set(
+              assets
+                .flatMap((g) => g.items.map((a) => a.code || ""))
+                .filter((code) => !!code && (byId as any)[code])
+            )
+          );
+          if (ids.length) groups.push({ label: loc.name, ids });
+        }
+
+        setLocGroups(groups);
+        setGroupsError(null);
+      } catch (e: any) {
+        console.error("[EMBED] Error cargando agrupaciones:", e);
+        setGroupsError(String(e?.message || e));
+        setLocGroups([]);
+      } finally {
+        setGroupsLoading(false);
+      }
+    })();
+  }, [configTick]);
 
   return (
     <div className="w-full bg-slate-50">
@@ -331,7 +540,6 @@ export default function App() {
         <div className="mx-auto max-w-[1600px] px-6 py-3 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <Layers3 className="h-5 w-5 text-slate-700" />
-
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {Object.keys(SCENARIOS).map((name) => (
@@ -368,11 +576,7 @@ export default function App() {
                   e.currentTarget.value = "";
                 }}
               />
-              <Button
-                variant="outline"
-                title="Importar posiciones desde JSON"
-                onClick={() => importInputRef.current?.click()}
-              >
+              <Button variant="outline" title="Importar posiciones desde JSON" onClick={() => importInputRef.current?.click()}>
                 Importar
               </Button>
             </label>
@@ -402,7 +606,7 @@ export default function App() {
               ref={svgRef}
               viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
               className="w-full"
-              style={{ height: "720px", touchAction: "none" }} // altura fija (ajustable)
+              style={{ height: "720px", touchAction: "none" }}
               onAuxClick={preventMiddleAux}
               onPointerDown={onSvgPointerDown}
               onPointerMove={onSvgPointerMove}
@@ -484,33 +688,9 @@ export default function App() {
   );
 }
 
-// === Backend infra ===
-const API_INFRA = ((import.meta as any)?.env?.VITE_API_URL || "https://backend-v85n.onrender.com/infra").replace(/\/+$/, "");
+/* ============================
+   Tipos para infra backend
+   ============================ */
 type InfraLocation = { id: number; code: string; name: string };
 type InfraAssetItem = { id: number; name?: string; code?: string };
 type InfraAssetGroup = { type: "tank" | "pump" | "valve" | "manifold"; items: InfraAssetItem[] };
-
-async function fetchLocationGroups(): Promise<Array<{ label: string; ids: string[] }>> {
-  const locs: InfraLocation[] = await fetch(`${API_INFRA}/locations`, {
-    headers: { Accept: "application/json" },
-  }).then((r) => r.json());
-
-  const groups: Array<{ label: string; ids: string[] }> = [];
-  for (const loc of locs) {
-    const assets: InfraAssetGroup[] = await fetch(`${API_INFRA}/locations/${loc.id}/assets`, {
-      headers: { Accept: "application/json" },
-    }).then((r) => r.json());
-
-    const ids = Array.from(
-      new Set(
-        assets
-          .flatMap((g) => g.items.map((a) => a.code || ""))
-          .filter((code) => !!code && (byId as any)[code]
-        )
-      )
-    );
-
-    if (ids.length) groups.push({ label: loc.name, ids });
-  }
-  return groups;
-}

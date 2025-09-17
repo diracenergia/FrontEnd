@@ -1,6 +1,6 @@
 // src/lib/api.ts
 
-/* ========= Config dinámica (API + API Key + WS) ========= */
+/* ========= Config dinámica (API + API Key + ORG + WS) ========= */
 
 const ENV = (import.meta as any)?.env ?? {};
 
@@ -36,6 +36,10 @@ const envKey = (ENV.VITE_API_KEY as string | undefined) ?? "";
 const storedKey = lsGet("apiKey", "");
 let API_KEY = (envKey || storedKey || (isDev ? "simulador123" : ""));
 
+// ORG_ID (env > saved > default 1)
+const envOrg = (ENV.VITE_ORG_ID as string | undefined) ?? "";
+let ORG_ID = Number(lsGet("orgId", "")) || Number(envOrg) || 1;
+
 // Timeout y retries
 const HTTP_TIMEOUT_MS = Number(ENV.VITE_HTTP_TIMEOUT_MS ?? 45_000);
 const HTTP_RETRIES = Math.max(0, Number(ENV.VITE_HTTP_RETRIES ?? 2));
@@ -59,6 +63,7 @@ let WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
 /* ========= Setters / Getters ========= */
 
 export function setApiBase(url: string) {
+  // Si vino por ENV, prevalece (no sobrescribimos en prod)
   if (ENV_API_HTTP) {
     API = trimSlash(ENV_API_HTTP);
     WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
@@ -75,6 +80,13 @@ export function setApiKey(key: string) {
   lsSet("apiKey", API_KEY);
 }
 export function getApiKey() { return API_KEY; }
+
+export function setOrgId(id: number | string) {
+  const n = Number(id);
+  ORG_ID = Number.isFinite(n) && n > 0 ? n : 1;
+  lsSet("orgId", String(ORG_ID));
+}
+export function getOrgId() { return ORG_ID; }
 
 export function getWsBaseOrEndpoint() { return WS_BASE_OR_ENDPOINT; }
 
@@ -106,6 +118,7 @@ export function debugConfig() {
     apiBase: API,
     wsUrl: telemetryWsUrl(),
     apiKeySet: !!API_KEY,
+    orgId: ORG_ID,
     timeoutMs: HTTP_TIMEOUT_MS,
     retries: HTTP_RETRIES,
   };
@@ -126,7 +139,8 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
   const base: HeadersInit = {
     Accept: "application/json",
     "X-API-Key": String(API_KEY),
-    Authorization: `Bearer ${String(API_KEY)}`, // compat
+    "X-Org-Id": String(ORG_ID),              // <<<<<< IMPORTANTE
+    Authorization: `Bearer ${String(API_KEY)}`, // compat futura
   };
   return { ...base, ...(extra ?? {}) };
 }
@@ -219,7 +233,7 @@ async function jget<T>(path: string): Promise<T> { return jrequest<T>("GET", pat
 async function jpost<T>(path: string, body: any): Promise<T> { return jrequest<T>("POST", path, body); }
 async function jput<T>(path: string, body: any): Promise<T> { return jrequest<T>("PUT", path, body); }
 
-// === NUEVO: helpers “soft 404” ===
+// === Soft-404 helpers (útiles cuando no hay lecturas) ===
 function isNotFoundErr(e: any) {
   const m = String(e?.message || "");
   return m.includes(" 404 ") || /Not Found/i.test(m);
@@ -410,7 +424,7 @@ export const api = {
   /* ---- Tanks ---- */
   listTanks: () => jget<Tank[]>("/tanks"),
 
-  // === NUEVO: tolerante a 404 ===
+  // tolerante a 404
   tankLatest: async (id: number) => {
     const fallback: TankLatest = {
       id, ts: new Date(0).toISOString(),
@@ -447,7 +461,7 @@ export const api = {
   /* ---- Pumps ---- */
   listPumps: () => jget<Pump[]>("/pumps"),
 
-  // === NUEVO: tolerante a 404 ===
+  // tolerante a 404
   pumpLatest: async (id: number) => {
     const fallback: PumpLatest = {
       id, ts: new Date(0).toISOString(),
@@ -521,6 +535,7 @@ export const api = {
     })),
   presenceAll: () => jget<Record<string, PresenceStatus>>(`/presence`),
 };
+
 
 // --- Tipos para infra/locations ---
 export type Location = {
