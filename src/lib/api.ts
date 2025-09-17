@@ -36,6 +36,10 @@ const envKey = (ENV.VITE_API_KEY as string | undefined) ?? "";
 const storedKey = lsGet("apiKey", "");
 let API_KEY = (envKey || storedKey || (isDev ? "simulador123" : ""));
 
+// ORG_ID (env > saved > default)
+const envOrg = (ENV.VITE_ORG_ID as string | undefined) ?? "";
+let ORG_ID = String(envOrg || lsGet("orgId", "") || (isDev ? "1" : "")) || "1"; // por seguridad, usa "1" si vacía
+
 // Timeout y retries
 const HTTP_TIMEOUT_MS = Number(ENV.VITE_HTTP_TIMEOUT_MS ?? 45_000);
 const HTTP_RETRIES = Math.max(0, Number(ENV.VITE_HTTP_RETRIES ?? 2));         // reintentos extra
@@ -77,9 +81,15 @@ export function setApiKey(key: string) {
 }
 export function getApiKey() { return API_KEY; }
 
+export function setOrgId(id: string | number) {
+  ORG_ID = String(id ?? "").trim() || ORG_ID;
+  lsSet("orgId", ORG_ID);
+}
+export function getOrgId() { return ORG_ID; }
+
 export function getWsBaseOrEndpoint() { return WS_BASE_OR_ENDPOINT; }
 
-/** Devuelve la URL final del WS de telemetría con query params */
+/** Devuelve la URL final del WS de telemetría con queuery params */
 export function telemetryWsUrl(params: { apiKey?: string; deviceId?: string } = {}) {
   const apiKey = params.apiKey ?? API_KEY ?? "";
   const deviceId = params.deviceId ?? "web-ui";
@@ -112,6 +122,7 @@ export function debugConfig() {
     apiBase: API,
     wsUrl: telemetryWsUrl(),
     apiKeySet: !!API_KEY,
+    orgId: ORG_ID,
     timeoutMs: HTTP_TIMEOUT_MS,
     retries: HTTP_RETRIES,
   };
@@ -132,6 +143,7 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
   const base: HeadersInit = {
     Accept: "application/json",
     "X-API-Key": String(API_KEY),
+    "X-Org-Id": String(ORG_ID),          // 👈 obligatorio para el backend
     // compat futura
     Authorization: `Bearer ${String(API_KEY)}`,
   };
@@ -504,8 +516,6 @@ export const api = {
     jget<PresenceStatus>(`/presence/${encodeURIComponent(deviceId)}`),
   presenceAll: () => jget<Record<string, PresenceStatus>>(`/presence`),
 };
-
-
 
 // --- Tipos para infra/locations ---
 export type Location = {
