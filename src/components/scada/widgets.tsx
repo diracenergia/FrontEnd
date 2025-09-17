@@ -152,13 +152,11 @@ export function TankCard({
 }
 
 /* =====================
-   PumpCard
+   PumpCard (simplificada)
 ===================== */
 
 const safeDate = (iso?: string | null) =>
   iso ? new Date(iso).toLocaleString("es-AR", { hour12: false }) : "—";
-const safeNum = (n: unknown) =>
-  typeof n === "number" && isFinite(n) ? n.toLocaleString("es-AR") : "—";
 
 export function PumpCard({
   pump,
@@ -171,14 +169,18 @@ export function PumpCard({
   signal?: "ok" | "warn" | "bad";
   status?: ConnStatus;
 }) {
-  const l = pump.latest;
+  const l = pump?.latest;
   const isOn = !!l?.is_on;
 
   // ---- Conexión: WS o fallback por timestamp de última lectura ----
   const fallbackAge = secSince(l?.ts);
   const fallbackTone: ConnStatus["tone"] =
     fallbackAge < WARN_SEC ? "ok" : fallbackAge < CRIT_SEC ? "warn" : "bad";
-  const conn: ConnStatus = status ?? { online: fallbackAge < CRIT_SEC, ageSec: fallbackAge, tone: fallbackTone };
+  const conn: ConnStatus = status ?? {
+    online: fallbackAge < CRIT_SEC,
+    ageSec: fallbackAge,
+    tone: fallbackTone,
+  };
 
   // combinar señal con status
   const tone = conn.tone ?? signal;
@@ -189,44 +191,43 @@ export function PumpCard({
       ? "filter saturate-50 opacity-90"
       : "";
 
-  const flowPct =
-    typeof l?.flow_lpm === "number" && typeof pump?.maxFlowLpm === "number" && pump.maxFlowLpm > 0
-      ? Math.max(0, Math.min(100, (l.flow_lpm / pump.maxFlowLpm) * 100))
-      : null;
-
-  const maxPressure = typeof pump?.maxPressureBar === "number" ? pump.maxPressureBar : null;
-  const pressurePct =
-    typeof l?.pressure_bar === "number" && typeof maxPressure === "number" && maxPressure > 0
-      ? Math.max(0, Math.min(100, (l.pressure_bar / maxPressure) * 100))
-      : null;
-
   return (
     <button
       onClick={onClick}
       className={`border rounded-2xl p-4 text-left w-full bg-white hover:shadow-lg transition ${dimClass}`}
-      aria-label={`Bomba ${pump.name}`}
+      aria-label={`Bomba ${pump?.name ?? ""}`}
     >
+      {/* Header: nombre + estado */}
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="font-medium text-slate-800">{pump.name}</div>
-          <div className="text-xs text-slate-500">
-            Modelo: {pump.model ?? "—"} · Máx: {safeNum(pump.maxFlowLpm)} L/min
+          <div className="font-medium text-slate-800">{pump?.name ?? "—"}</div>
+          <div className="text-[11px] text-slate-500">
+            {conn.online ? "Conectada" : "Desconectada"}
+            {typeof conn.ageSec === "number" && isFinite(conn.ageSec) && conn.online
+              ? ` · ${fmtAgoShort(conn.ageSec)}`
+              : ""}
           </div>
         </div>
 
         {/* Conexión + ON/OFF */}
         <div className="flex items-center gap-2">
-          <Badge tone={conn.tone}>
+          <Badge tone={tone}>
             {conn.online
               ? `Online${Number.isFinite(conn.ageSec) ? ` · ${fmtAgoShort(conn.ageSec)}` : ""}`
               : "Offline"}
           </Badge>
-          <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${isOn ? "bg-emerald-500" : "bg-slate-300"}`}>
+          <span
+            className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
+              isOn ? "bg-emerald-500" : "bg-slate-300"
+            }`}
+          >
             {isOn && <span className="absolute inset-0 rounded-full animate-pulse-ring" />}
           </span>
           <span
             className={`text-xs px-2 py-0.5 rounded-full border ${
-              isOn ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-50 text-slate-600 border-slate-200"
+              isOn
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                : "bg-slate-50 text-slate-600 border-slate-200"
             }`}
           >
             {isOn ? "ON" : "OFF"}
@@ -234,30 +235,30 @@ export function PumpCard({
         </div>
       </div>
 
-      {l ? (
-        <div className="mt-3 grid grid-cols-2 gap-4">
-          <MetricTile label="Caudal" value={`${safeNum(l.flow_lpm)} L/min`}>
-            {flowPct !== null && <Bar pct={flowPct} ariaLabel="Caudal relativo" />}
-          </MetricTile>
-
-          <MetricTile label="Presión" value={`${safeNum(l.pressure_bar)} bar`}>
-            {pressurePct !== null && <Bar pct={pressurePct} ariaLabel="Presión relativa" />}
-          </MetricTile>
-
-          <MetricTile label="Voltaje" value={safeNum(l.voltage_v)} suffix="V" />
-          <MetricTile label="Corriente" value={safeNum(l.current_a)} suffix="A" />
-
-          <div className="col-span-2 flex items-center justify-between rounded-xl border bg-slate-50/60 p-3">
-            <div className="text-xs text-slate-500">Última lectura</div>
-            <div className="text-xs text-slate-600">{safeDate(l.ts)}</div>
-            <div className="ml-3 w-8 h-8 text-slate-400">
-              <Impeller spinning={isOn} />
-            </div>
-          </div>
+      {/* Última lectura + impeller */}
+      <div className="mt-3 flex items-center justify-between rounded-xl border bg-slate-50/60 p-3">
+        <div className="flex items-center gap-2 text-xs text-slate-600">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="opacity-70"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
+          <span>Última lectura</span>
         </div>
-      ) : (
-        <div className="mt-3 text-slate-400 text-sm">Sin lecturas</div>
-      )}
+        <div className="text-xs text-slate-700">{safeDate(l?.ts)}</div>
+        <div className="ml-3 w-8 h-8 text-slate-400">
+          <Impeller spinning={isOn} />
+        </div>
+      </div>
 
       <style>
         {`
