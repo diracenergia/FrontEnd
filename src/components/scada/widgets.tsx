@@ -151,75 +151,15 @@ export function TankCard({
   );
 }
 
-/* ==================================================
-   PumpCard (versión simplificada)
-   - Sin caudal, presión, voltaje ni corriente
-   - Sin modelo, máx, lmin
-   - Focus en: nombre, estado conexión, ON/OFF, última lectura, impeller
-   - Estilo limpio y compacto
-================================================== */
-
-import React from "react";
-
-/* Utilidades locales (auto-contenido) */
-const WARN_SEC = 60; // 1 min
-const CRIT_SEC = 300; // 5 min
-
-function secSince(iso?: string | null) {
-  if (!iso) return Number.POSITIVE_INFINITY;
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return Number.POSITIVE_INFINITY;
-  return Math.max(0, ((Date.now() - t) / 1000) | 0);
-}
-
-function safeDate(iso?: string | null) {
-  return iso ? new Date(iso).toLocaleString("es-AR", { hour12: false }) : "—";
-}
-
-function fmtAgoShort(sec: number) {
-  if (!isFinite(sec)) return "—";
-  if (sec < 90) return `${sec | 0}s`;
-  const m = Math.round(sec / 60);
-  if (m < 90) return `${m}m`;
-  const h = Math.round(sec / 3600);
-  return `${h}h`;
-}
-
-/* Tipos mínimos */
-type Tone = "ok" | "warn" | "bad";
-export type ConnStatus = { online: boolean; ageSec?: number; tone?: Tone };
-
-/* Badge minimalista (auto-contenido) */
-function Badge({ tone = "ok", children }: { tone?: Tone; children: React.ReactNode }) {
-  const toneCls =
-    tone === "bad"
-      ? "bg-rose-50 text-rose-700 border-rose-200"
-      : tone === "warn"
-      ? "bg-amber-50 text-amber-700 border-amber-200"
-      : "bg-emerald-50 text-emerald-700 border-emerald-200";
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border ${toneCls}`}>{children}</span>
-  );
-}
-
-/* Impeller */
-function Impeller({ spinning = false }: { spinning?: boolean }) {
-  return (
-    <svg viewBox="0 0 64 64" className={spinning ? "impeller-spin" : undefined}>
-      <g fill="currentColor">
-        <circle cx="32" cy="32" r="6" />
-        <path d="M32 6a6 6 0 0 1 6 6c0 7-3 12-6 12s-6-5-6-12a6 6 0 0 1 6-6Z" />
-        <path d="M58 32a6 6 0 0 1-6 6c-7 0-12-3-12-6s5-6 12-6a6 6 0 0 1 6 6Z" />
-        <path d="M32 58a6 6 0 0 1-6-6c0-7 3-12 6-12s6 5 6 12a6 6 0 0 1-6 6Z" />
-        <path d="M6 32a6 6 0 0 1 6-6c7 0 12 3 12 6s-5 6-12 6a6 6 0 0 1-6-6Z" />
-      </g>
-    </svg>
-  );
-}
-
 /* =====================
    PumpCard
 ===================== */
+
+const safeDate = (iso?: string | null) =>
+  iso ? new Date(iso).toLocaleString("es-AR", { hour12: false }) : "—";
+const safeNum = (n: unknown) =>
+  typeof n === "number" && isFinite(n) ? n.toLocaleString("es-AR") : "—";
+
 export function PumpCard({
   pump,
   onClick,
@@ -228,39 +168,58 @@ export function PumpCard({
 }: {
   pump: any;
   onClick?: () => void;
-  signal?: Tone;
+  signal?: "ok" | "warn" | "bad";
   status?: ConnStatus;
 }) {
-  const l = pump?.latest;
+  const l = pump.latest;
   const isOn = !!l?.is_on;
 
-  // Conexión: por WS o por fallback vía timestamp
+  // ---- Conexión: WS o fallback por timestamp de última lectura ----
   const fallbackAge = secSince(l?.ts);
-  const fallbackTone: Tone = fallbackAge < WARN_SEC ? "ok" : fallbackAge < CRIT_SEC ? "warn" : "bad";
+  const fallbackTone: ConnStatus["tone"] =
+    fallbackAge < WARN_SEC ? "ok" : fallbackAge < CRIT_SEC ? "warn" : "bad";
   const conn: ConnStatus = status ?? { online: fallbackAge < CRIT_SEC, ageSec: fallbackAge, tone: fallbackTone };
 
+  // combinar señal con status
   const tone = conn.tone ?? signal;
-  const dimClass = tone === "bad" ? "grayscale opacity-60" : tone === "warn" ? "saturate-50 opacity-90" : "";
+  const dimClass =
+    tone === "bad"
+      ? "filter grayscale opacity-60"
+      : tone === "warn"
+      ? "filter saturate-50 opacity-90"
+      : "";
+
+  const flowPct =
+    typeof l?.flow_lpm === "number" && typeof pump?.maxFlowLpm === "number" && pump.maxFlowLpm > 0
+      ? Math.max(0, Math.min(100, (l.flow_lpm / pump.maxFlowLpm) * 100))
+      : null;
+
+  const maxPressure = typeof pump?.maxPressureBar === "number" ? pump.maxPressureBar : null;
+  const pressurePct =
+    typeof l?.pressure_bar === "number" && typeof maxPressure === "number" && maxPressure > 0
+      ? Math.max(0, Math.min(100, (l.pressure_bar / maxPressure) * 100))
+      : null;
 
   return (
     <button
       onClick={onClick}
       className={`border rounded-2xl p-4 text-left w-full bg-white hover:shadow-lg transition ${dimClass}`}
-      aria-label={`Bomba ${pump?.name ?? ""}`}
+      aria-label={`Bomba ${pump.name}`}
     >
-      {/* Header: nombre + estado */}
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="font-medium text-slate-800">{pump?.name ?? "—"}</div>
-          <div className="text-[11px] text-slate-500">
-            {conn.online ? "Conectada" : "Desconectada"}
-            {typeof conn.ageSec === "number" && isFinite(conn.ageSec) && conn.online ? ` · ${fmtAgoShort(conn.ageSec)}` : ""}
+          <div className="font-medium text-slate-800">{pump.name}</div>
+          <div className="text-xs text-slate-500">
+            Modelo: {pump.model ?? "—"} · Máx: {safeNum(pump.maxFlowLpm)} L/min
           </div>
         </div>
 
+        {/* Conexión + ON/OFF */}
         <div className="flex items-center gap-2">
-          <Badge tone={tone}>
-            {conn.online ? `Online${Number.isFinite(conn.ageSec ?? NaN) ? ` · ${fmtAgoShort(conn.ageSec!)} ` : ""}` : "Offline"}
+          <Badge tone={conn.tone}>
+            {conn.online
+              ? `Online${Number.isFinite(conn.ageSec) ? ` · ${fmtAgoShort(conn.ageSec)}` : ""}`
+              : "Offline"}
           </Badge>
           <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${isOn ? "bg-emerald-500" : "bg-slate-300"}`}>
             {isOn && <span className="absolute inset-0 rounded-full animate-pulse-ring" />}
@@ -275,36 +234,136 @@ export function PumpCard({
         </div>
       </div>
 
-      {/* Última lectura + impeller */}
-      <div className="mt-3 flex items-center justify-between rounded-xl border bg-slate-50/60 p-3">
-        <div className="flex items-center gap-2 text-xs text-slate-600">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-70">
-            <circle cx="12" cy="12" r="10" />
-            <polyline points="12 6 12 12 16 14" />
-          </svg>
-          <span>Última lectura</span>
-        </div>
-        <div className="text-xs text-slate-700">{safeDate(l?.ts)}</div>
-        <div className="ml-3 w-8 h-8 text-slate-400">
-          <Impeller spinning={isOn} />
-        </div>
-      </div>
+      {l ? (
+        <div className="mt-3 grid grid-cols-2 gap-4">
+          <MetricTile label="Caudal" value={`${safeNum(l.flow_lpm)} L/min`}>
+            {flowPct !== null && <Bar pct={flowPct} ariaLabel="Caudal relativo" />}
+          </MetricTile>
 
-      {/* Animaciones locales */}
-      <style>{`
+          <MetricTile label="Presión" value={`${safeNum(l.pressure_bar)} bar`}>
+            {pressurePct !== null && <Bar pct={pressurePct} ariaLabel="Presión relativa" />}
+          </MetricTile>
+
+          <MetricTile label="Voltaje" value={safeNum(l.voltage_v)} suffix="V" />
+          <MetricTile label="Corriente" value={safeNum(l.current_a)} suffix="A" />
+
+          <div className="col-span-2 flex items-center justify-between rounded-xl border bg-slate-50/60 p-3">
+            <div className="text-xs text-slate-500">Última lectura</div>
+            <div className="text-xs text-slate-600">{safeDate(l.ts)}</div>
+            <div className="ml-3 w-8 h-8 text-slate-400">
+              <Impeller spinning={isOn} />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 text-slate-400 text-sm">Sin lecturas</div>
+      )}
+
+      <style>
+        {`
         @keyframes rotate360 { to { transform: rotate(360deg); } }
         .impeller-spin { animation: rotate360 1.2s linear infinite; }
+
         @keyframes pulseRing {
           0% { box-shadow: 0 0 0 0 rgba(16,185,129,0.45); }
           70% { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
           100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
         }
         .animate-pulse-ring { animation: pulseRing 1.6s ease-out infinite; }
-      `}</style>
+      `}
+      </style>
     </button>
   );
 }
 
+/* =====================
+   Compartidos
+===================== */
+
+function clampPct(n: number) {
+  if (!isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, n));
+}
+
+function fmtAgoShort(sec: number) {
+  if (!isFinite(sec)) return "—";
+  if (sec < 90) return `${sec | 0}s`;
+  const m = Math.round(sec / 60);
+  if (m < 90) return `${m}m`;
+  const h = Math.round(sec / 3600);
+  return `${h}h`;
+}
+
+function MetricTile({ label, value, suffix, children }: any) {
+  return (
+    <div className="rounded-xl border p-3 bg-slate-50/60">
+      <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="text-lg font-semibold text-slate-800 tabular-nums">
+        {value}
+        {suffix ? <span className="ml-1 text-slate-500 text-sm">{suffix}</span> : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Bar({ pct, ariaLabel }: { pct: number; ariaLabel?: string }) {
+  const p = Math.max(0, Math.min(100, pct));
+  return (
+    <div className="mt-2" aria-label={ariaLabel}>
+      <div className="h-2 w-full rounded-full bg-slate-200 overflow-hidden">
+        <div
+          className="h-full bg-gradient-to-r from-emerald-500 via-cyan-500 to-sky-500"
+          style={{ width: `${p}%`, transition: "width 600ms ease" }}
+        />
+      </div>
+      <div className="mt-1 text-[10px] text-slate-500">{Math.round(p)}%</div>
+    </div>
+  );
+}
+
+function Impeller({ spinning = false }: { spinning?: boolean }) {
+  return (
+    <svg viewBox="0 0 64 64" className={spinning ? "impeller-spin" : undefined}>
+      <g fill="currentColor">
+        <circle cx="32" cy="32" r="6" />
+        <path d="M32 6a6 6 0 0 1 6 6c0 7-3 12-6 12s-6-5-6-12a6 6 0 0 1 6-6Z" />
+        <path d="M58 32a6 6 0 0 1-6 6c-7 0-12-3-12-6s5-6 12-6a6 6 0 0 1 6 6Z" />
+        <path d="M32 58a6 6 0 0 1-6-6c0-7 3-12 6-12s6 5 6 12a6 6 0 0 1-6 6Z" />
+        <path d="M6 32a6 6 0 0 1 6-6c7 0 12 3 12 6s-5 6-12 6a6 6 0 0 1-6-6Z" />
+      </g>
+    </svg>
+  );
+}
+
+// === Extras del Tank ===
+function Bubbles({ count = 12 }: { count?: number }) {
+  const items = Array.from({ length: count }).map((_, i) => {
+    const left = ((i * 73) % 100) + Math.random() * 2 - 1;
+    const size = 4 + (i % 6);
+    const dur = 3.8 + ((i * 0.37) % 2.8);
+    const delay = (i * 0.45) % 6;
+    return { i, left, size, dur, delay };
+  });
+
+  return (
+    <>
+      {items.map(({ i, left, size, dur, delay }) => (
+        <span
+          key={i}
+          className="absolute bottom-0 rounded-full bg-white/60 border border-white/30 shadow-sm"
+          style={{
+            left: `${left}%`,
+            width: size,
+            height: size,
+            animation: `bubble-rise ${dur}s ease-in infinite`,
+            animationDelay: `${delay}s`,
+          }}
+        />
+      ))}
+    </>
+  );
+}
 
 function WaveSVG() {
   return (
