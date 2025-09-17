@@ -36,14 +36,10 @@ const envKey = (ENV.VITE_API_KEY as string | undefined) ?? "";
 const storedKey = lsGet("apiKey", "");
 let API_KEY = (envKey || storedKey || (isDev ? "simulador123" : ""));
 
-// ORG_ID (env > saved > default)
-const envOrg = (ENV.VITE_ORG_ID as string | undefined) ?? "";
-let ORG_ID = String(envOrg || lsGet("orgId", "") || (isDev ? "1" : "")) || "1"; // por seguridad, usa "1" si vacía
-
 // Timeout y retries
 const HTTP_TIMEOUT_MS = Number(ENV.VITE_HTTP_TIMEOUT_MS ?? 45_000);
-const HTTP_RETRIES = Math.max(0, Number(ENV.VITE_HTTP_RETRIES ?? 2));         // reintentos extra
-const RETRY_BASE_MS = Math.max(50, Number(ENV.VITE_HTTP_RETRY_BASE_MS ?? 500)); // backoff base
+const HTTP_RETRIES = Math.max(0, Number(ENV.VITE_HTTP_RETRIES ?? 2));
+const RETRY_BASE_MS = Math.max(50, Number(ENV.VITE_HTTP_RETRY_BASE_MS ?? 500));
 const WAKE_ON_FAIL = String(ENV.VITE_HTTP_WAKE_ON_FAIL ?? "true").toLowerCase() !== "false";
 
 // WS (env endpoint/base -> si no, derivar desde HTTP)
@@ -63,7 +59,6 @@ let WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
 /* ========= Setters / Getters ========= */
 
 export function setApiBase(url: string) {
-  // Si vino por ENV, prevalece (no sobrescribimos en prod)
   if (ENV_API_HTTP) {
     API = trimSlash(ENV_API_HTTP);
     WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
@@ -81,34 +76,23 @@ export function setApiKey(key: string) {
 }
 export function getApiKey() { return API_KEY; }
 
-export function setOrgId(id: string | number) {
-  ORG_ID = String(id ?? "").trim() || ORG_ID;
-  lsSet("orgId", ORG_ID);
-}
-export function getOrgId() { return ORG_ID; }
-
 export function getWsBaseOrEndpoint() { return WS_BASE_OR_ENDPOINT; }
 
-/** Devuelve la URL final del WS de telemetría con queuery params */
+/** Devuelve la URL final del WS de telemetría con query params */
 export function telemetryWsUrl(params: { apiKey?: string; deviceId?: string } = {}) {
   const apiKey = params.apiKey ?? API_KEY ?? "";
   const deviceId = params.deviceId ?? "web-ui";
 
-  // Si viene un ws:// o wss:// completo en env...
   if (isAbsWsUrl(WS_BASE_OR_ENDPOINT)) {
     const url = new URL(WS_BASE_OR_ENDPOINT);
-
-    // Si no trae path, forzamos /ws/telemetry
     if (!url.pathname || url.pathname === "/") {
       url.pathname = "/ws/telemetry";
     }
-
     url.searchParams.set("api_key", apiKey);
     url.searchParams.set("device_id", deviceId);
     return url.toString();
   }
 
-  // Si es base (no absoluta), derivamos desde la base y completamos el endpoint
   const base = WS_BASE_OR_ENDPOINT || wsFromHttpBase(API);
   const sep = base.endsWith("/") ? "" : "/";
   const u = new URL(`${base}${sep}ws/telemetry`);
@@ -122,7 +106,6 @@ export function debugConfig() {
     apiBase: API,
     wsUrl: telemetryWsUrl(),
     apiKeySet: !!API_KEY,
-    orgId: ORG_ID,
     timeoutMs: HTTP_TIMEOUT_MS,
     retries: HTTP_RETRIES,
   };
@@ -143,9 +126,7 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
   const base: HeadersInit = {
     Accept: "application/json",
     "X-API-Key": String(API_KEY),
-    "X-Org-Id": String(ORG_ID),          // 👈 obligatorio para el backend
-    // compat futura
-    Authorization: `Bearer ${String(API_KEY)}`,
+    Authorization: `Bearer ${String(API_KEY)}`, // compat
   };
   return { ...base, ...(extra ?? {}) };
 }
@@ -156,7 +137,6 @@ const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504, 522, 524]);
 
 function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
 function backoff(attempt: number) {
-  // attempt: 0..HTTP_RETRIES → 0,1,2…  exponencial simple + jitter
   const base = RETRY_BASE_MS * Math.pow(2, attempt);
   const jitter = Math.floor(Math.random() * (RETRY_BASE_MS / 2));
   return base + jitter;
@@ -194,10 +174,8 @@ async function jrequest<T>(
         ),
         body: body != null ? JSON.stringify(body) : undefined,
         signal: ctrl.signal,
-        // mode: "cors" // por defecto ya es "cors" en navegador
       });
 
-      // ¿retry por status?
       if (!r.ok && RETRYABLE_STATUS.has(r.status) && attempt < HTTP_RETRIES) {
         lastErr = new Error(`${r.status} ${r.statusText}`);
         clearTimeout(timer);
@@ -205,10 +183,8 @@ async function jrequest<T>(
         continue;
       }
 
-      // 204 No Content
       if (r.status === 204) return {} as T;
 
-      // Intentar parsear JSON; si no, texto
       let data: any = {};
       try { data = await r.json(); }
       catch {
@@ -223,9 +199,7 @@ async function jrequest<T>(
 
     } catch (e: any) {
       lastErr = e;
-      // ¿retry por AbortError / red?
       if (isAbortOrNetwork(e) && attempt < HTTP_RETRIES) {
-        // “Despertar” backend si está dormido (opcional)
         if (WAKE_ON_FAIL && attempt === 0) {
           try { await pingHealth(); } catch {}
         }
@@ -238,14 +212,22 @@ async function jrequest<T>(
       clearTimeout(timer);
     }
   }
-
-  // en teoría no llega acá, pero por las dudas:
   throw lastErr ?? new Error(`${method} ${path} failed`);
 }
 
 async function jget<T>(path: string): Promise<T> { return jrequest<T>("GET", path); }
 async function jpost<T>(path: string, body: any): Promise<T> { return jrequest<T>("POST", path, body); }
 async function jput<T>(path: string, body: any): Promise<T> { return jrequest<T>("PUT", path, body); }
+
+// === NUEVO: helpers “soft 404” ===
+function isNotFoundErr(e: any) {
+  const m = String(e?.message || "");
+  return m.includes(" 404 ") || /Not Found/i.test(m);
+}
+async function jgetOr<T>(path: string, fallback: () => T): Promise<T> {
+  try { return await jget<T>(path); }
+  catch (e) { if (isNotFoundErr(e)) return fallback(); throw e; }
+}
 
 // Querystring limpio (omite undefined/null)
 function qs(params?: Record<string, any>) {
@@ -348,7 +330,7 @@ export type PumpHistoryPoint = {
 export type TankWithConfig = {
   id: number;
   name: string;
-  capacity_liters: number | null; // normalizado desde capacity_m3*1000 si hace falta
+  capacity_liters: number | null;
   low_pct: number | null;
   low_low_pct: number | null;
   high_pct: number | null;
@@ -427,13 +409,23 @@ export type PresenceStatus = {
 export const api = {
   /* ---- Tanks ---- */
   listTanks: () => jget<Tank[]>("/tanks"),
-  tankLatest: (id: number) => jget<TankLatest>(`/tanks/${id}/latest`),
-  tankHistory: (id: number, limit = 100) =>
-    jget<TankHistoryPoint[]>(`/tanks/${id}/history${qs({ limit })}`),
+
+  // === NUEVO: tolerante a 404 ===
+  tankLatest: async (id: number) => {
+    const fallback: TankLatest = {
+      id, ts: new Date(0).toISOString(),
+      level_percent: null, volume_l: null, temperature_c: null,
+      extra: null, reading_id: undefined,
+    };
+    return await jgetOr<TankLatest>(`/tanks/${id}/latest`, () => fallback);
+  },
+
+  tankHistory: async (id: number, limit = 100) =>
+    await jgetOr<TankHistoryPoint[]>(`/tanks/${id}/history${qs({ limit })}`, () => []),
 
   /* ---- Config Tanks ---- */
   listTanksWithConfig: async () => {
-    const raw = await jget<any[]>("/tanks/config");
+    const raw = await jgetOr<any[]>("/tanks/config", () => []);
     return raw.map((r) => ({
       ...r,
       capacity_liters:
@@ -445,7 +437,6 @@ export const api = {
     try {
       return await jput<{ ok: true; config: any }>(`/tanks/${tankId}/config`, cfg);
     } catch (e: any) {
-      // compat: backend antiguo que usa POST
       if (String(e?.message || "").includes("405")) {
         return await jpost<{ ok: true; config: any }>(`/tanks/${tankId}/config`, cfg);
       }
@@ -455,12 +446,24 @@ export const api = {
 
   /* ---- Pumps ---- */
   listPumps: () => jget<Pump[]>("/pumps"),
-  pumpLatest: (id: number) => jget<PumpLatest>(`/pumps/${id}/latest`),
-  pumpHistory: (id: number, limit = 100) =>
-    jget<PumpHistoryPoint[]>(`/pumps/${id}/history${qs({ limit })}`),
+
+  // === NUEVO: tolerante a 404 ===
+  pumpLatest: async (id: number) => {
+    const fallback: PumpLatest = {
+      id, ts: new Date(0).toISOString(),
+      is_on: null, flow_lpm: null, pressure_bar: null, voltage_v: null, current_a: null,
+      control_mode: null, manual_lockout: null, extra: null, reading_id: undefined,
+    };
+    return await jgetOr<PumpLatest>(`/pumps/${id}/latest`, () => fallback);
+  },
+
+  pumpHistory: async (id: number, limit = 100) =>
+    await jgetOr<PumpHistoryPoint[]>(`/pumps/${id}/history${qs({ limit })}`, () => []),
 
   /* ---- Config Pumps ---- */
-  listPumpsWithConfig: () => jget<PumpWithConfig[]>("/pumps/config"),
+  listPumpsWithConfig: async () =>
+    await jgetOr<PumpWithConfig[]>("/pumps/config", () => []),
+
   savePumpConfig: async (pumpId: number, cfg: PumpConfigIn) => {
     try {
       return await jput<{ ok: true; config: any }>(`/pumps/${pumpId}/config`, cfg);
@@ -512,46 +515,34 @@ export const api = {
   }) => jget<AuditEvent[]>(`/audit${qs(params)}`),
 
   /* ---- Presencia ---- */
-  presence: (deviceId: string) =>
-    jget<PresenceStatus>(`/presence/${encodeURIComponent(deviceId)}`),
+  presence: async (deviceId: string) =>
+    await jgetOr<PresenceStatus>(`/presence/${encodeURIComponent(deviceId)}`, () => ({
+      device_id: deviceId, online: false, last_seen: null,
+    })),
   presenceAll: () => jget<Record<string, PresenceStatus>>(`/presence`),
 };
 
 // --- Tipos para infra/locations ---
 export type Location = {
-  id: string;            // ej: "Planta", "Pulmón", "Tanques Altos"
+  id: string;
   name: string;
   counts: { tank: number; pump: number; valve: number; manifold: number };
 };
 
 export type LocationSummary = {
-  location: string;      // mismo id
+  location: string;
   counts: { tank: number; pump: number; valve: number; manifold: number };
-  telemetry: {
-    pumps_with_latest: number;
-    tanks_with_latest: number;
-  };
-  kpis: {
-    pumps_uptime_ratio_30d: number | null;
-    tanks_avg_fill_pct_30d: number | null;
-    pumps_kwh_30d: number | null;
-  };
+  telemetry: { pumps_with_latest: number; tanks_with_latest: number };
+  kpis: { pumps_uptime_ratio_30d: number | null; tanks_avg_fill_pct_30d: number | null; pumps_kwh_30d: number | null };
 };
 
 // --- Endpoints de infraestructura ---
 export const infra = {
   graphNodes: () => jget<any[]>('/infra/graph/nodes'),
   graphEdges: () => jget<any[]>('/infra/graph/edges'),
-
-  // locations
   locations: () => jget<Location[]>('/infra/locations'),
-
-  // IMPORTANTE: id es string (y puede tener espacios) → encodeURIComponent
-  locAssets:  (id: string /*, types?: Array<'tank'|'pump'|'valve'|'manifold'> */) =>
-    jget<any[]>(`/infra/locations/${encodeURIComponent(id)}/assets`),
-
-  locSummary: (id: string) =>
-    jget<LocationSummary>(`/infra/locations/${encodeURIComponent(id)}/summary`),
+  locAssets:  (id: string) => jget<any[]>(`/infra/locations/${encodeURIComponent(id)}/assets`),
+  locSummary: (id: string) => jget<LocationSummary>(`/infra/locations/${encodeURIComponent(id)}/summary`),
 };
 
 // --- NUEVO: tipos backend actuales (IDs numéricos) ---
@@ -568,15 +559,14 @@ export type InfraSummary = {
 };
 export type InfraTree = { location: InfraLocation; summary: InfraSummary; assets: InfraAssetGroup[] };
 
-// --- NUEVO: endpoints numerados (no pisan los viejos) ---
+// --- NUEVO: endpoints numerados ---
 export const infra2 = {
   locations: () => jget<InfraLocation[]>('/infra/locations'),
   locTree:   (id: number) => jget<InfraTree>(`/infra/locations/${id}/tree`),
-  // si querés seguir consultando assets por tipo/loc:
   locAssets: (id: number) => jget<InfraAssetGroup[]>(`/infra/locations/${id}/assets`),
 };
 
-// --- NUEVO: helper para armar un mapa asset -> location_id (clave 'type:id') ---
+// --- NUEVO: helper para mapa asset -> location_id ---
 export async function fetchAssetLocationMap(): Promise<Map<string, number>> {
   const locs = await infra2.locations();
   const pairs: [string, number][] = [];

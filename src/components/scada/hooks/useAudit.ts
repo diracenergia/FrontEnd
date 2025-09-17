@@ -1,29 +1,32 @@
-import React from "react";
+import * as React from "react";
 import { api } from "../../../lib/api";
-import type { AuditEvent } from "../../../lib/api";
 
-export function useAudit(pollMs = 15000) {
-  const [rows, setRows] = React.useState<AuditEvent[]>([]);
+const isNetErr = (e: any) => /Failed to fetch|NetworkError|TypeError: Network|AbortError/i.test(String(e?.message || e));
+
+export function useAudit() {
+  const [rows, setRows] = React.useState<any[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [err, setErr] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     try {
-      const r = await api.auditList({ limit: 100 });
-      setRows(r);
-    } catch (e) {
-      // Silencioso: ya vemos auditoría en la pestaña
-      console.error("[audit] load error", e);
+      setLoading(true);
+      const data = await api.auditList({ limit: 100 }).catch((e) => {
+        if (isNetErr(e)) return []; // fallback silencioso en error de red
+        throw e;
+      });
+      setRows(data ?? []);
+      setErr(null);
+    } catch (e: any) {
+      console.warn("[audit] load error", e);
+      // Mostrá el error sólo si querés; si no, comentá la línea de abajo:
+      // setErr(e?.message || String(e));
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  React.useEffect(() => {
-    let alive = true;
-    load();
-    const t = setInterval(() => alive && load(), pollMs);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [load, pollMs]);
+  React.useEffect(() => { load(); }, [load]);
 
-  return { rows, reloadAudit: load };
+  return { rows, loading, err, reload: load };
 }
