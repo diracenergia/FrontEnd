@@ -174,6 +174,22 @@ async function fetchJSON<T>(url: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+// Guardado de posición en la DB (autosave)
+async function saveNodePosToBackend(id: string, x: number, y: number) {
+  try {
+    const API_INFRA = getInfraBase();
+    const headers: HeadersInit = { ...infraHeaders(), "Content-Type": "application/json" };
+    const body = JSON.stringify([{ id, x, y }]);
+    const r = await fetch(`${API_INFRA}/layout`, { method: "POST", headers, body });
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      throw new Error(`POST /layout -> ${r.status} ${r.statusText} ${t}`);
+    }
+  } catch (e) {
+    console.warn("[EMBED] No se pudo guardar el layout en backend:", e);
+  }
+}
+
 /* ============================
    API graph types + helpers nuevos
    ============================ */
@@ -192,12 +208,6 @@ type ApiNode = {
 };
 type ApiGraph = { nodes: ApiNode[]; edges: string[] };
 type AB = { a: string; b: string };
-
-function normEdgeId(id: string): string {
-  if (!id) return id;
-  const i = id.indexOf(':');
-  return i >= 0 ? id.slice(i + 1) : id;
-}
 
 /* ============================
    Utils de UI
@@ -390,71 +400,67 @@ export default function App() {
   // --------------------------
   // Cargar GRAFO DESDE BACKEND y re-hidratar NODES/byId + edges
   // --------------------------
-  // --------------------------
-// Cargar GRAFO DESDE BACKEND y re-hidratar NODES/byId + edges
-// --------------------------
-useEffect(() => {
-  (async () => {
-    try {
-      const API_INFRA = getInfraBase();
-      const data = await fetchJSON<ApiGraph>(`${API_INFRA}/graph`);
+  useEffect(() => {
+    (async () => {
+      try {
+        const API_INFRA = getInfraBase();
+        const data = await fetchJSON<ApiGraph>(`${API_INFRA}/graph`);
 
-      // 1) mapear nodos API -> formato front (⚠️ usar ID EXACTO del backend)
-      let mapped = (data.nodes || []).map((n) => {
-        const id = n.id || (n.code ? `${n.type}:${n.code}` : `${n.type}_${n.asset_id ?? ''}`);
-        const base: any = {
-          id,
-          type: n.type,
-          name: n.name,
-          // guardamos el code para agrupaciones por ubicación
-          code: n.code ?? (typeof id === 'string' && id.includes(':') ? id.split(':')[1] : undefined),
-          x: Number.isFinite(n.x) ? (n.x as number) : 0,
-          y: Number.isFinite(n.y) ? (n.y as number) : 0,
-        };
-        if (n.type === 'tank')  { base.level = n.level ?? null; base.capacity = n.capacity ?? null; }
-        if (n.type === 'pump')  { base.status = n.status ?? 'unknown'; base.kW = n.kW ?? null; }
-        if (n.type === 'valve') { base.state  = n.state  ?? 'open'; }
-        return base;
-      });
+        // 1) mapear nodos API -> formato front (⚠️ usar ID EXACTO del backend)
+        let mapped = (data.nodes || []).map((n) => {
+          const id = n.id || (n.code ? `${n.type}:${n.code}` : `${n.type}_${n.asset_id ?? ''}`);
+          const base: any = {
+            id,
+            type: n.type,
+            name: n.name,
+            // guardamos el code para agrupaciones por ubicación
+            code: n.code ?? (typeof id === 'string' && id.includes(':') ? id.split(':')[1] : undefined),
+            x: Number.isFinite(n.x) ? (n.x as number) : 0,
+            y: Number.isFinite(n.y) ? (n.y as number) : 0,
+          };
+          if (n.type === 'tank')  { base.level = n.level ?? null; base.capacity = n.capacity ?? null; }
+          if (n.type === 'pump')  { base.status = n.status ?? 'unknown'; base.kW = n.kW ?? null; }
+          if (n.type === 'valve') { base.state  = n.state  ?? 'open'; }
+          return base;
+        });
 
-      // 2) autolayout si no vinieron posiciones
-      const needLayout = mapped.some(m => !Number.isFinite(m.x) || !Number.isFinite(m.y));
-      if (needLayout) mapped = computeAutoLayout(mapped);
+        // 2) autolayout si no vinieron posiciones
+        const needLayout = mapped.some(m => !Number.isFinite(m.x) || !Number.isFinite(m.y));
+        if (needLayout) mapped = computeAutoLayout(mapped);
 
-      // 3) re-hidratar estructuras mutables exportadas
-      (NODES as any).length = 0;
-      (NODES as any).push(...mapped);
-      Object.keys(byId).forEach(k => delete (byId as any)[k]);
-      for (const n of mapped) (byId as any)[n.id] = n;
+        // 3) re-hidratar estructuras mutables exportadas
+        (NODES as any).length = 0;
+        (NODES as any).push(...mapped);
+        Object.keys(byId).forEach(k => delete (byId as any)[k]);
+        for (const n of mapped) (byId as any)[n.id] = n;
 
-      // 4) parsear edges "SRC>DST" a {a,b} usando IDs tal cual del backend
-      const parsed: AB[] = (data.edges || []).map((s) => {
-        const [aRaw, bRaw] = String(s).split('>');
-        return { a: aRaw, b: bRaw };
-      });
+        // 4) parsear edges "SRC>DST" a {a,b} usando IDs tal cual del backend
+        const parsed: AB[] = (data.edges || []).map((s) => {
+          const [aRaw, bRaw] = String(s).split('>');
+          return { a: aRaw, b: bRaw };
+        });
 
-      // (opcional) diagnóstico de extremos faltantes
-      const missing = parsed.filter(e => !(byId as any)[e.a] || !(byId as any)[e.b]);
-      if (missing.length) {
-        console.warn('[EMBED] Edges con extremos no encontrados (muestra):', missing.slice(0, 10), '… total:', missing.length);
+        // (opcional) diagnóstico de extremos faltantes
+        const missing = parsed.filter(e => !(byId as any)[e.a] || !(byId as any)[e.b]);
+        if (missing.length) {
+          console.warn('[EMBED] Edges con extremos no encontrados (muestra):', missing.slice(0, 10), '… total:', missing.length);
+        }
+
+        setEdgesFromApi(parsed);
+
+        // 5) fit al contenido
+        fitToContent();
+
+        console.info('[EMBED] Graph cargado:', { nodes: mapped.length, edges: parsed.length });
+      } catch (e) {
+        console.warn('[EMBED] Backend graph fallback → usando hardcoded:', e);
+        setEdgesFromApi([]); // usamos escenarios locales
       }
-
-      setEdgesFromApi(parsed);
-
-      // 5) fit al contenido
-      fitToContent();
-
-      console.info('[EMBED] Graph cargado:', { nodes: mapped.length, edges: parsed.length });
-    } catch (e) {
-      console.warn('[EMBED] Backend graph fallback → usando hardcoded:', e);
-      setEdgesFromApi([]); // usamos escenarios locales
-    }
-  })();
-}, [configTick]);
-
+    })();
+  }, [configTick]);
 
   // --------------------------
-  // Overlay draggable por nodo
+  // Overlay draggable por nodo (con autosave a DB)
   // --------------------------
   const DraggableOverlay: React.FC<{ id: string }> = ({ id }) => {
     const n = byId[id];
@@ -482,13 +488,12 @@ useEffect(() => {
       },
       snap: 10,
       onEnd: () => {
-  saveLayoutToStorage(); // backup local
-  const n = byId[id];
-  if (n && Number.isFinite(n.x) && Number.isFinite(n.y)) {
-    saveNodePosToBackend(id, n.x, n.y);
-  }
-},
-
+        saveLayoutToStorage(); // backup local
+        const n = byId[id];
+        if (n && Number.isFinite(n.x) && Number.isFinite(n.y)) {
+          saveNodePosToBackend(id, n.x, n.y);
+        }
+      },
     });
 
     return (
@@ -604,6 +609,14 @@ useEffect(() => {
     (async () => {
       try {
         const locs = await fetchJSON<InfraLocation[]>(`${API_INFRA}/locations`);
+
+        // índice code -> id (id es 'type:code' o 'type_<id>' ya presente en byId)
+        const codeIndex = new Map<string, string>();
+        for (const n of NODES as any[]) {
+          const code = n.code ?? (typeof n.id === 'string' && n.id.includes(':') ? n.id.split(':')[1] : undefined);
+          if (code) codeIndex.set(code, n.id);
+        }
+
         const groups: Array<{ label: string; ids: string[] }> = [];
 
         for (const loc of locs) {
@@ -612,7 +625,8 @@ useEffect(() => {
             new Set(
               assets
                 .flatMap((g) => g.items.map((a) => a.code || ""))
-                .filter((code) => !!code && (byId as any)[code])
+                .map((code) => codeIndex.get(code) || "")
+                .filter((id) => !!id && (byId as any)[id])
             )
           );
           if (ids.length) groups.push({ label: loc.name, ids });
