@@ -3,8 +3,8 @@ import React from "react";
 import type { User } from "./types";
 import { Drawer, NavItem, KpiPill, Badge } from "./ui";
 import { OverviewGrid, AlarmsPage, TrendsPage, SettingsPage, AuditPage } from "./pages";
-import InfraestructuraPage from "./pages/InfraestructuraPage"; // 👈 import del tab embebido
-import { useLocation } from "react-router-dom"; // sólo para logs (no navegamos)
+import InfraestructuraPage from "./pages/InfraestructuraPage";
+import { useLocation } from "react-router-dom";
 import { hasPerm } from "./rbac";
 import { labelOfTab, sevMeta, severityOf } from "./utils";
 import { usePlant } from "./hooks/usePlant";
@@ -15,7 +15,7 @@ import { PumpFaceplate } from "./faceplates/PumpFaceplate";
 // 🔌 WS (telemetría en tiempo real)
 import { connectTelemetryWS, onWS } from "../../lib/ws";
 // 🔔 REST para alarmas (fallback si no llegan por WS)
-import { api } from "../../lib/api";
+import { api, infra2 } from "../../lib/api";
 
 const DEFAULT_THRESHOLDS = { lowCritical: 10, lowWarning: 25, highWarning: 80, highCritical: 90 };
 
@@ -26,13 +26,20 @@ const ONLINE_CRIT_SEC = Number((import.meta as any).env?.VITE_WS_CRIT_SEC ?? 120
 // Poll de alarmas (0 = deshabilitado)
 const ALARMS_POLL_MS = Number((import.meta as any).env?.VITE_ALARMS_POLL_MS ?? 5000);
 
+// === Tipos locales para mapeo de localidades (lo que espera OverviewGrid) ===
+type AssetLocLink = {
+  asset_type: "tank" | "pump";
+  asset_id: number;
+  location_id: number;
+  code?: string | null;
+  name?: string | null;
+};
+
 export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   const location = useLocation();
 
-  const [tab, setTab] = React.useState<
-    "overview" | "alarms" | "trends" | "settings" | "audit" | "infra"
-  >("overview");
-  const [drawer, setDrawer] = React.useState<{ type: "tank" | "pump" | null; id?: string | null }>({ type: null });
+  const [tab, setTab] = React.useState<"overview" | "alarms" | "trends" | "settings" | "audit" | "infra">("overview");
+  const [drawer, setDrawer] = React.useState<{ type: "tank" | "pump" | null; id?: string | number | null }>({ type: null });
   const [user] = React.useState<User>(initialUser || { id: "u1", name: "operador@rdls", role: "operador" });
 
   // Podés bajar el polling a 0 si querés depender 100% del WS: VITE_POLL_MS=0
@@ -44,6 +51,51 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
 
   // ===== Per-device beats (WS) → online/offline por activo =====
   const [beats, setBeats] = React.useState<Record<string, number>>({}); // device_id -> lastBeatMs
+
+  // === NUEVO: mapeo de localidades para agrupar el Overview ===
+  const [assetLocs, setAssetLocs] = React.useState<AssetLocLink[] | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // Usamos la API tipada del proyecto (usa VITE_API_URL, API key y X-Org-Id)
+        const locs = await infra2.locations();
+        // Si querés paralelizar:
+        // const allByLoc = await Promise.all(locs.map(l => infra2.locAssets(l.id).then(gs => ({ loc: l, groups: gs }))));
+        // const all: AssetLocLink[] = allByLoc.flatMap(({loc, groups}) => groups.flatMap(g =>
+        //   (g.type === "tank" || g.type === "pump") ? g.items.map(it => ({
+        //     asset_type: g.type, asset_id: it.id, location_id: loc.id, code: loc.code, name: loc.name
+        //   })) : []
+        // ));
+        // setAssetLocs(all);
+
+        const all: AssetLocLink[] = [];
+        for (const loc of locs) {
+          const groups = await infra2.locAssets(loc.id);
+          for (const g of groups) {
+            if (g.type !== "tank" && g.type !== "pump") continue;
+            for (const it of g.items) {
+              all.push({
+                asset_type: g.type as "tank" | "pump",
+                asset_id: it.id as number,
+                location_id: loc.id,
+                code: loc.code,
+                name: loc.name,
+              });
+            }
+          }
+        }
+        if (cancelled) return;
+        console.log("[ScadaApp] assetLocs OK", { locs: locs.length, links: all.length, sample: all.slice(0, 8) });
+        setAssetLocs(all);
+      } catch (e) {
+        console.error("[ScadaApp] assetLocs FAIL", e);
+        if (!cancelled) setAssetLocs([]); // evita null para que OverviewGrid no espere
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // 🔎 LOG: cada render (ruta + tab)
   console.log("[ScadaApp] render", {
@@ -60,7 +112,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
     console.log("[ScadaApp] tab ->", tab);
   }, [tab]);
 
-  // 🔎 LOG: cambios grandes del plant (solo resumen para no spamear)
+  // 🔎 LOG: cambios grandes del plant (solo resumen)
   React.useEffect(() => {
     console.log("[ScadaApp] plant update", {
       tanks: plant?.tanks?.length ?? 0,
@@ -79,15 +131,12 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   const nowMs = () => Date.now();
 
   React.useEffect(() => {
-    // 1) Conectar (idempotente)
     console.log("[WS] connectTelemetryWS()");
     connectTelemetryWS();
 
-    // 2) Suscripción a eventos
     const off = onWS((m: any) => {
       const type = m?.type;
 
-      // Si el mensaje tiene device_id, registramos beat SOLO de ese dispositivo
       const devId = get(m, "device_id");
       if (devId) {
         setBeats((prev) => ({ ...prev, [String(devId)]: nowMs() }));
@@ -96,7 +145,6 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
       switch (type) {
         case "status":
         case "heartbeat":
-          // ya marcamos beat arriba si vino device_id
           break;
 
         case "tank_update": {
@@ -104,7 +152,6 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
           const latest = get(m, "latest") ?? m; // admite plano
           if (typeof tkId !== "number" || !latest) return;
 
-          // Marca beat por el activo (device lógico) aunque no venga device_id
           const logicalDev = `rdls-esp32-tk${tkId}`;
           setBeats((prev) => ({ ...prev, [logicalDev]: nowMs() }));
 
@@ -141,7 +188,6 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
           const latest = get(m, "latest") ?? m;
           if (typeof puId !== "number" || !latest) return;
 
-          // Marca beat por el activo (device lógico) aunque no venga device_id
           const logicalDev = `rdls-esp32-pu${puId}`;
           setBeats((prev) => ({ ...prev, [logicalDev]: nowMs() }));
 
@@ -163,7 +209,6 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
 
         case "alarms_snapshot":
         case "alarms_update": {
-          // Si el backend emite alarmas por WS, actualizamos en vivo
           const payload = m?.payload ?? m;
           if (Array.isArray(payload)) {
             setPlant((prev: any) => ({ ...prev, alarms: payload }));
@@ -230,9 +275,11 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
     tab === "overview" ? (
       <OverviewGrid
         plant={plant}
-        onOpenTank={(id: string) => setDrawer({ type: "tank", id })}
-        onOpenPump={(id: string) => setDrawer({ type: "pump", id })}
+        assetLocs={assetLocs ?? undefined}     // ← mapeo para agrupar por localidad
+        onOpenTank={(id) => setDrawer({ type: "tank", id })}
+        onOpenPump={(id) => setDrawer({ type: "pump", id })}
         statusByKey={statusByKey}
+        debug                                   // logs detallados en consola
       />
     ) : tab === "alarms" ? (
       <AlarmsPage plant={plant} setPlant={setPlant} user={user} onAudit={(evt: any) => logAction(evt)} />
@@ -265,7 +312,6 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
     ) : tab === "audit" ? (
       <AuditPage audit={auditRows} />
     ) : (
-      // 👇 NUEVO: pestaña Infraestructura embebida
       <InfraestructuraPage />
     );
 
@@ -288,7 +334,6 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
               <NavItem label="Tendencias" active={tab === "trends"} onClick={() => setTab("trends")} />
               <NavItem label="Configuración" active={tab === "settings"} onClick={() => setTab("settings")} />
               <NavItem label="Auditoría" active={tab === "audit"} onClick={() => setTab("audit")} />
-              {/* 👉 Ahora es un tab local, no cambiamos de ruta */}
               <NavItem label="Infraestructura" active={tab === "infra"} onClick={() => setTab("infra")} />
             </nav>
           </div>
@@ -305,7 +350,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
             <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="text-lg font-semibold tracking-tight">{labelOfTab(tab)}</div>
-                {/* KPIs globales (dejamos como estaban) */}
+                {/* KPIs globales */}
                 <div className="hidden md:flex items-center gap-3 text-xs">
                   <KpiPill label="Nivel promedio" value={loading && !plant.tanks.length ? "…" : `${kpis.avg}%`} tone="ok" />
                   <KpiPill label="Críticos" value={loading && !plant.tanks.length ? "…" : `${kpis.crit}`} tone={kpis.crit ? "bad" : "ok"} />
@@ -328,7 +373,6 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
           </header>
 
           <div className="max-w-7xl mx-auto p-4 md:p-6">
-            {/* 👉 sin banners globales de telemetría */}
             {loading && !plant.tanks.length ? (
               <div className="p-4">Cargando…</div>
             ) : err ? (
@@ -343,8 +387,8 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
       {/* Drawer */}
       {(() => {
         const isTank = drawer.type === "tank";
-        const t = isTank ? plant.tanks.find((x: any) => x.id === drawer.id) : null;
-        const p = drawer.type === "pump" ? plant.pumps.find((x: any) => x.id === drawer.id) : null;
+        const t = isTank ? plant.tanks.find((x: any) => String(x.id) === String(drawer.id)) : null;
+        const p = drawer.type === "pump" ? plant.pumps.find((x: any) => String(x.id) === String(drawer.id)) : null;
 
         const sev = t ? severityOf(t.levelPct, t.thresholds ?? DEFAULT_THRESHOLDS) : null;
         const meta = sev ? sevMeta(sev) : null;
@@ -360,9 +404,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
             right={isTank && meta ? <Badge tone={meta.tone}>{meta.label}</Badge> : null}
           >
             {isTank && t && <TankFaceplate tank={t} headerless />}
-            {drawer.type === "pump" && p && (
-              <PumpFaceplate pump={p} user={user} onAudit={(evt: any) => console.log("[AUDIT]", evt)} />
-            )}
+            {drawer.type === "pump" && p && <PumpFaceplate pump={p} user={user} onAudit={(evt: any) => console.log("[AUDIT]", evt)} />}
           </Drawer>
         );
       })()}
