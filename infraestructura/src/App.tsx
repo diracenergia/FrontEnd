@@ -509,7 +509,7 @@ export default function App() {
             new Set(
               assets
                 .flatMap((g) => g.items.map((a) => a.code || ""))
-                .filter((code) => !!code && (byId as any)[code])
+                .filter((code) => !!code)
             )
           );
           if (ids.length) groups.push({ label: loc.name, ids });
