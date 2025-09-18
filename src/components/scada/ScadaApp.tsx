@@ -11,6 +11,7 @@ import { usePlant } from "./hooks/usePlant";
 import { useAudit } from "./hooks/useAudit";
 import { TankFaceplate } from "./faceplates/TankFaceplate";
 import { PumpFaceplate } from "./faceplates/PumpFaceplate";
+import KpiView from "./pages/KpiView";
 
 // 🔌 WS (telemetría en tiempo real)
 import { connectTelemetryWS, onWS } from "../../lib/ws";
@@ -26,6 +27,9 @@ const ONLINE_CRIT_SEC = Number((import.meta as any).env?.VITE_WS_CRIT_SEC ?? 120
 // Poll de alarmas (0 = deshabilitado)
 const ALARMS_POLL_MS = Number((import.meta as any).env?.VITE_ALARMS_POLL_MS ?? 5000);
 
+
+
+
 // === Tipos locales para mapeo de localidades (lo que espera OverviewGrid) ===
 type AssetLocLink = {
   asset_type: "tank" | "pump";
@@ -38,7 +42,10 @@ type AssetLocLink = {
 export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   const location = useLocation();
 
-  const [tab, setTab] = React.useState<"overview" | "alarms" | "trends" | "settings" | "audit" | "infra">("overview");
+  const [tab, setTab] = React.useState<
+  "overview" | "alarms" | "trends" | "settings" | "audit" | "infra" | "kpi"
+>("overview");
+
   const [drawer, setDrawer] = React.useState<{ type: "tank" | "pump" | null; id?: string | number | null }>({ type: null });
   const [user] = React.useState<User>(initialUser || { id: "u1", name: "operador@rdls", role: "operador" });
 
@@ -272,48 +279,51 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   }, [plant, beats]);
 
   const body =
-    tab === "overview" ? (
-      <OverviewGrid
-        plant={plant}
-        assetLocs={assetLocs ?? undefined}     // ← mapeo para agrupar por localidad
-        onOpenTank={(id) => setDrawer({ type: "tank", id })}
-        onOpenPump={(id) => setDrawer({ type: "pump", id })}
-        statusByKey={statusByKey}
-        debug                                   // logs detallados en consola
-      />
-    ) : tab === "alarms" ? (
-      <AlarmsPage plant={plant} setPlant={setPlant} user={user} onAudit={(evt: any) => logAction(evt)} />
-    ) : tab === "trends" ? (
-      <TrendsPage />
-    ) : tab === "settings" ? (
-      <SettingsPage
-        plant={plant}
-        setPlant={(updater: any) => {
-          setPlant((prev: any) => {
-            const next = typeof updater === "function" ? updater(prev) : updater;
-            (prev.tanks || []).forEach((t: any, i: number) => {
-              const n = (next.tanks || [])[i];
-              if (!n) return;
-              if (JSON.stringify(t.thresholds) !== JSON.stringify(n.thresholds)) {
-                const permitted = hasPerm(user, "canEditSetpoints");
-                logAction({
-                  action: "EDIT_THRESHOLD",
-                  asset: t.id,
-                  details: JSON.stringify(n.thresholds),
-                  result: permitted ? "ok" : "denied",
-                });
-              }
-            });
-            return next;
+  tab === "overview" ? (
+    <OverviewGrid
+      plant={plant}
+      assetLocs={assetLocs ?? undefined}
+      onOpenTank={(id) => setDrawer({ type: "tank", id })}
+      onOpenPump={(id) => setDrawer({ type: "pump", id })}
+      statusByKey={statusByKey}
+      debug
+    />
+  ) : tab === "alarms" ? (
+    <AlarmsPage plant={plant} setPlant={setPlant} user={user} onAudit={(evt: any) => logAction(evt)} />
+  ) : tab === "trends" ? (
+    <TrendsPage />
+  ) : tab === "settings" ? (
+    <SettingsPage
+      plant={plant}
+      setPlant={(updater: any) => {
+        setPlant((prev: any) => {
+          const next = typeof updater === "function" ? updater(prev) : updater;
+          (prev.tanks || []).forEach((t: any, i: number) => {
+            const n = (next.tanks || [])[i];
+            if (!n) return;
+            if (JSON.stringify(t.thresholds) !== JSON.stringify(n.thresholds)) {
+              const permitted = hasPerm(user, "canEditSetpoints");
+              logAction({
+                action: "EDIT_THRESHOLD",
+                asset: t.id,
+                details: JSON.stringify(n.thresholds),
+                result: permitted ? "ok" : "denied",
+              });
+            }
           });
-        }}
-        user={user}
-      />
-    ) : tab === "audit" ? (
-      <AuditPage audit={auditRows} />
-    ) : (
-      <InfraestructuraPage />
-    );
+          return next;
+        });
+      }}
+      user={user}
+    />
+  ) : tab === "audit" ? (
+    <AuditPage audit={auditRows} />
+  ) : tab === "kpi" ? (
+    // 👇 NUEVO: render de la vista que monta el widget
+    <KpiView />
+  ) : (
+    <InfraestructuraPage />
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
@@ -331,12 +341,14 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
             <nav className="space-y-1">
               
               <NavItem label="Infraestructura" active={tab === "infra"} onClick={() => setTab("infra")} />
-              <NavItem label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} />
-              <NavItem label="Alarmas" active={tab === "alarms"} onClick={() => setTab("alarms")} />
-              <NavItem label="Tendencias" active={tab === "trends"} onClick={() => setTab("trends")} />
+              <NavItem label="Operaciones" active={tab === "overview"} onClick={() => setTab("overview")} />
+              <NavItem label="KPIs" active={tab === "kpi"} onClick={() => setTab("kpi")} />
+              {/*<NavItem label="Alarmas" active={tab === "alarms"} onClick={() => setTab("alarms")} /> */}
+              {/*<NavItem label="Tendencias" active={tab === "trends"} onClick={() => setTab("trends")} /> */}
               <NavItem label="Configuración" active={tab === "settings"} onClick={() => setTab("settings")} />
-              <NavItem label="Auditoría" active={tab === "audit"} onClick={() => setTab("audit")} />
+               {/*<NavItem label="Auditoría" active={tab === "audit"} onClick={() => setTab("audit")} /> */}
               
+
             </nav>
           </div>
 
