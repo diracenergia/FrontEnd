@@ -659,64 +659,26 @@ export default function App() {
             <Layers3 className="h-5 w-5 text-slate-700" />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {Object.keys(SCENARIOS).map((name) => (
-              <Button
-                key={name}
-                variant={scenario === (name as any) ? "default" : "outline"}
-                onClick={() => setScenario(name as any)}
-                title={`Escenario: ${name}`}
-              >
-                <Play className="h-4 w-4" /> {name}
-              </Button>
-            ))}
-            <Button variant={edit ? "default" : "outline"} onClick={() => setEdit((e) => !e)} title="Mover nodos">
-              <Edit3 className="h-4 w-4" /> {edit ? "Editando" : "Editar"}
-            </Button>
-            <Button variant="outline" onClick={fitToContent} title="Encajar todo (doble click en el lienzo)">
-              <Maximize2 className="h-4 w-4" /> Fit
-            </Button>
-            <Button variant="ghost" onClick={resetAuto} title="Recalcular posiciones automáticamente">
-              <RotateCcw className="h-4 w-4" /> Reset
-            </Button>
-            <Button variant="outline" onClick={doExportJSON} title="Exportar posiciones a JSON">
-              Exportar
-            </Button>
-            <label className="inline-flex">
-              <input
-                ref={importInputRef}
-                type="file"
-                accept="application/json"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.currentTarget.files?.[0];
-                  if (f) doImportJSON(f);
-                  e.currentTarget.value = "";
-                }}
-              />
-              <Button variant="outline" title="Importar posiciones desde JSON" onClick={() => importInputRef.current?.click()}>
-                Importar
-              </Button>
-            </label>
-            <Button variant="ghost" title="Sólo demo visual, datos hardcodeados">
-              <Info className="h-4 w-4" /> Demo
-            </Button>
-          </div>
+  <Button variant={edit ? "default" : "outline"} onClick={() => setEdit((e) => !e)} title="Mover nodos">
+    <Edit3 className="h-4 w-4" /> {edit ? "Editando" : "Editar"}
+  </Button>
+</div>
+
         </div>
       </div>
 
       {/* Canvas */}
       <div className="mx-auto max-w-[1600px] px-6 py-6">
         <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-200">
-          <div className="mb-3 flex items-center justify-between">
-            <Legend />
-            <div className="text-sm text-slate-600">
-              Escenario: <span className="font-medium text-slate-900">{scenario}</span>
-              {edit && <span className="ml-3 text-emerald-700 font-medium">Modo edición</span>}
-              <span className="ml-3 text-slate-400">
-                Ctrl/⌘ + rueda = Zoom • Ruedita presionada = Pan • Doble clic = Fit
-              </span>
-            </div>
-          </div>
+   <div className="mb-3 flex flex-wrap items-center justify-center gap-4">
+  <Legend />
+  {edit && (
+    <div className="text-sm text-emerald-700 font-medium">Modo edición</div>
+  )}
+</div>
+
+
+
 
           <div className="relative w-full overflow-hidden rounded-xl border border-slate-200">
             <svg

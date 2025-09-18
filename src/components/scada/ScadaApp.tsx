@@ -329,12 +329,14 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
             </div>
 
             <nav className="space-y-1">
+              
+              <NavItem label="Infraestructura" active={tab === "infra"} onClick={() => setTab("infra")} />
               <NavItem label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} />
               <NavItem label="Alarmas" active={tab === "alarms"} onClick={() => setTab("alarms")} />
               <NavItem label="Tendencias" active={tab === "trends"} onClick={() => setTab("trends")} />
               <NavItem label="Configuración" active={tab === "settings"} onClick={() => setTab("settings")} />
               <NavItem label="Auditoría" active={tab === "audit"} onClick={() => setTab("audit")} />
-              <NavItem label="Infraestructura" active={tab === "infra"} onClick={() => setTab("infra")} />
+              
             </nav>
           </div>
 
