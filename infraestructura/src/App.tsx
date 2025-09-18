@@ -1,22 +1,19 @@
 // src/App.tsx
-import React, { useEffect, useRef, useState } from "react";
-import { Layers3, Play, Info, Edit3, RotateCcw, Maximize2 } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Layers3, Edit3 } from "lucide-react";
 
 import Button from "@/components/ui/Button";
 import Legend from "@/components/Legend";
-import { NODES, SCENARIOS, byId, BASE_NODES } from "@/data/graph";
-import useEdgesForScenario from "@/hooks/useEdgesForScenario";
 import Edge from "@/components/diagram/Edge";
 import { Tank, Pump, Valve, Manifold, AutoGroupBox } from "@/components/diagram/nodes";
 import useDragNode from "@/hooks/useDragNode";
 import { nodeHalfSize } from "@/utils/nodeDims";
 import { computeAutoLayout } from "@/layout/auto";
-import {
-  exportLayout,
-  importLayout,
-  saveLayoutToStorage,
-  loadLayoutFromStorage,
-} from "./layout/layoutIO";
+import { setNodeResolver } from "@/utils/paths";
+
+import type { NodeBase } from "@/types/graph";
+import useTankStatuses from "@/hooks/useTankStatuses";        // ⬅️ nuevo hook
+import { fetchTankStatuses, TankStatusOut } from "@/api/status"; // por si lo querés directo
 
 /* ========= Bootstrap de configuración para iframes ========= */
 
@@ -60,7 +57,7 @@ function persistConfig({ apiBase, apiKey, orgId }: { apiBase?: string | null; ap
   } catch {}
 }
 
-// 3) Handshake con el padre: el iframe pide config y acepta recibirla
+// 3) Handshake con el padre
 (function setupEmbedConfigHandshake() {
   const q = readConfigFromQuery();
   if (q.apiBase || q.apiKey || q.orgId) persistConfig(q);
@@ -83,31 +80,23 @@ function persistConfig({ apiBase, apiKey, orgId }: { apiBase?: string | null; ap
 })();
 
 /* ============================
-   Helpers de configuración (sin lib/api)
+   Helpers de configuración
    ============================ */
-function envAny(): any {
-  return (import.meta as any)?.env ?? {};
-}
-function trimSlash(s: string) {
-  return String(s || "").replace(/\/+$/, "");
-}
+function envAny(): any { return (import.meta as any)?.env ?? {}; }
+function trimSlash(s: string) { return String(s || "").replace(/\/+$/, ""); }
 function ensureInfraBase(httpBase: string) {
   const base = trimSlash(httpBase);
   return base.endsWith("/infra") ? base : `${base}/infra`;
 }
-// === reemplazar estas helpers ===
 function getHttpDefault(): string {
-  // Si estamos en dev de Vite (5173/5174/5175), forzamos backend local
   const origin = typeof window !== "undefined" ? trimSlash(window.location.origin) : "";
   const isViteDev = /^http:\/\/(localhost|127\.0\.0\.1):517\d$/i.test(origin);
   if (isViteDev) {
-    console.warn("[EMBED][WARN] Origin parece un dev-server de Vite:", origin, " → usando backend http://127.0.0.1:8000");
+    console.warn("[EMBED][WARN] Origin dev Vite:", origin, "→ usando backend http://127.0.0.1:8000");
     return "http://127.0.0.1:8000";
   }
-  // Si no es Vite dev, dejamos el origin (útil en prod cuando front y back comparten host)
   return origin || "http://127.0.0.1:8000";
 }
-
 /** Base HTTP para /infra (ENV > LS > default coherente) */
 function getInfraBase(): string {
   const e = envAny();
@@ -116,29 +105,23 @@ function getInfraBase(): string {
   const base    = trimSlash(envBase || lsBase || getHttpDefault());
   const finalBase = ensureInfraBase(base);
   if (/^http:\/\/(localhost|127\.0\.0\.1):517\d\/infra$/i.test(finalBase)) {
-    console.warn("[EMBED][WARN] La base apunta al dev-server de Vite:", finalBase, " → esto dará 404. Configurá api_base o VITE_API_URL.");
+    console.warn("[EMBED][WARN] La base apunta al dev-server de Vite:", finalBase, "→ esto dará 404. Configurá api_base o VITE_API_URL.");
   }
   return finalBase;
 }
-
 /** API Key (ENV > LS > sin fallback) */
 function getApiKey(): string {
   const e = envAny();
   const envKey = String(e?.VITE_API_KEY || "");
   const lsKey  = typeof localStorage !== "undefined" ? String(localStorage.getItem("apiKey") || "") : "";
   const key = envKey || lsKey || "";
-  if (!key) {
-    console.warn("[EMBED][WARN] API Key ausente. En tests podés pasarla por ?api_key=... o via postMessage EMBED_CONFIG.");
-  }
+  if (!key) console.warn("[EMBED][WARN] API Key ausente.");
   return key;
 }
-
-/** Org Id (ENV > LS > default "1" como en lib/api.ts) */
+/** Org Id (ENV > LS > default "1") */
 function getOrgId(): string {
   const e = envAny();
-  const raw =
-    e?.VITE_ORG_ID ??
-    (typeof localStorage !== "undefined" ? localStorage.getItem("orgId") : null);
+  const raw = e?.VITE_ORG_ID ?? (typeof localStorage !== "undefined" ? localStorage.getItem("orgId") : null);
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? String(n) : "1";
 }
@@ -146,10 +129,7 @@ function getOrgId(): string {
 function infraHeaders(): HeadersInit {
   const h: Record<string, string> = { Accept: "application/json" };
   const key = getApiKey();
-  if (key) {
-    h["X-API-Key"] = key;
-    h["Authorization"] = `Bearer ${key}`; // compat
-  }
+  if (key) { h["X-API-Key"] = key; h["Authorization"] = `Bearer ${key}`; }
   const org = getOrgId();
   if (org) h["X-Org-Id"] = org;
   return h;
@@ -191,7 +171,19 @@ async function saveNodePosToBackend(id: string, x: number, y: number) {
 }
 
 /* ============================
-   API graph types + helpers nuevos
+   API root (para /tanks/status)
+   ============================ */
+function getApiRoot(): string {
+  // Igual a getHttpDefault() pero SIN ensureInfraBase
+  const e = envAny();
+  const envBase = trimSlash(e?.VITE_API_URL || e?.VITE_API_HTTP_URL || "");
+  const lsBase  = typeof localStorage !== "undefined" ? trimSlash(localStorage.getItem("apiBase") || "") : "";
+  const base    = trimSlash(envBase || lsBase || getHttpDefault());
+  return base; // p.ej. http://127.0.0.1:8000
+}
+
+/* ============================
+   Types para /infra/graph
    ============================ */
 type ApiNode = {
   id?: string;
@@ -213,19 +205,13 @@ type AB = { a: string; b: string };
    Utils de UI
    ============================ */
 const preventMiddleAux: React.MouseEventHandler<any> = (e) => {
-  if ((e as any).button === 1) {
-    e.preventDefault();
-    e.stopPropagation();
-  }
+  if ((e as any).button === 1) { e.preventDefault(); e.stopPropagation(); }
 };
 
 type ViewBox = { x: number; y: number; w: number; h: number };
 
-function nodesBBox(nodes = NODES) {
-  let minX = +Infinity,
-    minY = +Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
+function nodesBBox(nodes: NodeBase[]) {
+  let minX = +Infinity, minY = +Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const n of nodes) {
     const { halfW, halfH } = nodeHalfSize(n.type);
     minX = Math.min(minX, n.x - halfW);
@@ -234,32 +220,29 @@ function nodesBBox(nodes = NODES) {
     maxY = Math.max(maxY, n.y + halfH);
   }
   const pad = 120;
-  minX -= pad;
-  minY -= pad;
-  maxX += pad;
-  maxY += pad;
+  minX -= pad; minY -= pad; maxX += pad; maxY += pad;
   return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
 }
 
 export default function App() {
-  const [scenario, setScenario] = useState<keyof typeof SCENARIOS>("Normal");
   const [edit, setEdit] = useState(false);
   const [tick, setTick] = useState(0);
 
-  // Escenario hardcodeado original
-  const edgesScenario = useEdgesForScenario(scenario);
+  // Estado: nodos y edges (ya no usamos NODES/byId globales)
+  const [nodes, setNodes] = useState<NodeBase[]>([]);
+  const byId = useMemo(() => Object.fromEntries(nodes.map(n => [n.id, n])) as Record<string, NodeBase>, [nodes]);
+const [edges, setEdges] = useState<AB[]>([]);
 
-  // Edges que vengan del backend (si hay, pisan a las del escenario)
-  const [edgesFromApi, setEdgesFromApi] = useState<AB[]>([]);
-  const edges = edgesFromApi.length ? edgesFromApi : edgesScenario;
+  // Registrar resolver global para orthogonalPath(a,b)
+useEffect(() => {
+ setNodeResolver((id) => byId[id]);
+}, [byId]);
+
 
   // escucha cambios de config (cuando el host manda EMBED_CONFIG)
   const [configTick, setConfigTick] = useState(0);
   useEffect(() => {
-    const onCfg = () => {
-      console.log("[EMBED] Config actualizada, reintentando cargas…");
-      setConfigTick((t) => t + 1);
-    };
+    const onCfg = () => { console.log("[EMBED] Config actualizada, reintentando cargas…"); setConfigTick((t) => t + 1); };
     window.addEventListener(CONFIG_EVENT, onCfg);
     return () => window.removeEventListener(CONFIG_EVENT, onCfg);
   }, []);
@@ -274,10 +257,7 @@ export default function App() {
     const ro = new ResizeObserver(reportHeight);
     ro.observe(document.documentElement);
     window.addEventListener("load", reportHeight);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("load", reportHeight);
-    };
+    return () => { ro.disconnect(); window.removeEventListener("load", reportHeight); };
   }, []);
 
   // --------------------------
@@ -285,8 +265,8 @@ export default function App() {
   // --------------------------
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [vb, setVb] = useState<ViewBox>(() => {
-    const bb = nodesBBox();
-    return { x: bb.minX, y: bb.minY, w: bb.w, h: bb.h };
+    const bb = nodesBBox([]); // arranca vacío; luego ajustamos
+    return { x: bb.minX || -400, y: bb.minY || -300, w: bb.w || 1600, h: bb.h || 900 };
   });
   const vbRef = useRef(vb);
   vbRef.current = vb;
@@ -294,15 +274,13 @@ export default function App() {
   const rafRef = useRef<number | null>(null);
   const scheduleTick = () => {
     if (rafRef.current == null) {
-      rafRef.current = requestAnimationFrame(() => {
-        setTick((t) => t + 1);
-        rafRef.current = null;
-      });
+      rafRef.current = requestAnimationFrame(() => { setTick((t) => t + 1); rafRef.current = null; });
     }
   };
 
   const fitToContent = () => {
-    const bb = nodesBBox();
+    if (!nodes.length) return;
+    const bb = nodesBBox(nodes);
     setVb({ x: bb.minX, y: bb.minY, w: bb.w, h: bb.h });
   };
 
@@ -325,18 +303,11 @@ export default function App() {
   }
 
   useEffect(() => {
-    const loaded = loadLayoutFromStorage();
-    if (loaded) scheduleTick();
-    fitToContent();
-
     const svg = svgRef.current;
     if (!svg) return;
 
     const onWheelNative = (e: WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        zoomBy(e.deltaY, e.clientX, e.clientY);
-      }
+      if (e.ctrlKey || e.metaKey) { e.preventDefault(); zoomBy(e.deltaY, e.clientX, e.clientY); }
     };
     svg.addEventListener("wheel", onWheelNative, { passive: false });
 
@@ -344,123 +315,125 @@ export default function App() {
     const host = svg.parentElement;
     if (host) ro.observe(host);
 
-    return () => {
-      svg.removeEventListener("wheel", onWheelNative);
-      ro.disconnect();
-    };
+    return () => { svg.removeEventListener("wheel", onWheelNative); ro.disconnect(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [nodes.length]);
 
   // --------------------------
   // Pan con ruedita PRESIONADA
   // --------------------------
-  const panning = useRef({
-    active: false,
-    start: { x: 0, y: 0 },
-    vb0: { x: 0, y: 0, w: 0, h: 0 } as ViewBox,
-  });
-
+  const panning = useRef({ active: false, start: { x: 0, y: 0 }, vb0: { x: 0, y: 0, w: 0, h: 0 } as ViewBox });
   function startPan(e: React.PointerEvent) {
-    const svg = svgRef.current!;
-    e.preventDefault();
-    svg.setPointerCapture(e.pointerId);
-    panning.current.active = true;
-    panning.current.start = { x: e.clientX, y: e.clientY };
-    panning.current.vb0 = vbRef.current;
+    const svg = svgRef.current!; e.preventDefault(); svg.setPointerCapture(e.pointerId);
+    panning.current.active = true; panning.current.start = { x: e.clientX, y: e.clientY }; panning.current.vb0 = vbRef.current;
   }
-
   function movePan(e: React.PointerEvent) {
     if (!panning.current.active) return;
-    const svg = svgRef.current!;
-    const rect = svg.getBoundingClientRect();
-    const dxClient = e.clientX - panning.current.start.x;
-    const dyClient = e.clientY - panning.current.start.y;
-    const sx = vbRef.current.w / rect.width;
-    const sy = vbRef.current.h / rect.height;
-    const nx = panning.current.vb0.x - dxClient * sx;
-    const ny = panning.current.vb0.y - dyClient * sy;
+    const svg = svgRef.current!; const rect = svg.getBoundingClientRect();
+    const dxClient = e.clientX - panning.current.start.x; const dyClient = e.clientY - panning.current.start.y;
+    const sx = vbRef.current.w / rect.width; const sy = vbRef.current.h / rect.height;
+    const nx = panning.current.vb0.x - dxClient * sx; const ny = panning.current.vb0.y - dyClient * sy;
     setVb((prev) => ({ ...prev, x: nx, y: ny }));
   }
-
-  function endPan(e: React.PointerEvent) {
-    const svg = svgRef.current!;
-    try {
-      svg.releasePointerCapture(e.pointerId);
-    } catch {}
-    panning.current.active = false;
-  }
-
-  const onSvgPointerDown: React.PointerEventHandler<SVGSVGElement> = (e) => {
-    if (e.button === 1) startPan(e);
-  };
-  const onSvgPointerMove: React.PointerEventHandler<SVGSVGElement> = (e) => movePan(e);
-  const onSvgPointerUp: React.PointerEventHandler<SVGSVGElement> = (e) => endPan(e);
-  const onSvgPointerCancel: React.PointerEventHandler<SVGSVGElement> = (e) => endPan(e);
+  function endPan(e: React.PointerEvent) { const svg = svgRef.current!; try { svg.releasePointerCapture(e.pointerId); } catch {} panning.current.active = false; }
+  const onSvgPointerDown: React.PointerEventHandler<SVGSVGElement> = (e) => { if (e.button === 1) startPan(e); };
+  const onSvgPointerMove:  React.PointerEventHandler<SVGSVGElement> = (e) => movePan(e);
+  const onSvgPointerUp:    React.PointerEventHandler<SVGSVGElement> = (e) => endPan(e);
+  const onSvgPointerCancel:React.PointerEventHandler<SVGSVGElement> = (e) => endPan(e);
 
   // --------------------------
-  // Cargar GRAFO DESDE BACKEND y re-hidratar NODES/byId + edges
+  // Cargar GRAFO DESDE BACKEND
   // --------------------------
   useEffect(() => {
     (async () => {
       try {
         const API_INFRA = getInfraBase();
         const data = await fetchJSON<ApiGraph>(`${API_INFRA}/graph`);
-
-        // 1) mapear nodos API -> formato front (⚠️ usar ID EXACTO del backend)
-        let mapped = (data.nodes || []).map((n) => {
+        // mapear nodos API -> NodeBase (id estable del backend)
+        let mapped: NodeBase[] = (data.nodes || []).map((n) => {
           const id = n.id || (n.code ? `${n.type}:${n.code}` : `${n.type}_${n.asset_id ?? ''}`);
-          const base: any = {
+          const base: NodeBase = {
             id,
             type: n.type,
             name: n.name,
-            // guardamos el code para agrupaciones por ubicación
-            code: n.code ?? (typeof id === 'string' && id.includes(':') ? id.split(':')[1] : undefined),
             x: Number.isFinite(n.x) ? (n.x as number) : 0,
             y: Number.isFinite(n.y) ? (n.y as number) : 0,
+            // asset_id para cruzar con /tanks/status
+            asset_id: typeof n.asset_id === 'number' ? n.asset_id : undefined,
           };
-          if (n.type === 'tank')  { base.level = n.level ?? null; base.capacity = n.capacity ?? null; }
-          if (n.type === 'pump')  { base.status = n.status ?? 'unknown'; base.kW = n.kW ?? null; }
-          if (n.type === 'valve') { base.state  = n.state  ?? 'open'; }
+          if (n.type === 'tank')  { base.level = n.level ?? undefined; base.capacity = n.capacity ?? undefined; }
+          if (n.type === 'pump')  { base.status = (n.status as any) ?? 'unknown'; base.kW = n.kW ?? undefined; }
+          if (n.type === 'valve') { base.state  = (n.state  as any) ?? 'open'; }
           return base;
         });
 
-        // 2) autolayout si no vinieron posiciones
+        // autolayout si no vinieron posiciones
         const needLayout = mapped.some(m => !Number.isFinite(m.x) || !Number.isFinite(m.y));
         if (needLayout) mapped = computeAutoLayout(mapped);
 
-        // 3) re-hidratar estructuras mutables exportadas
-        (NODES as any).length = 0;
-        (NODES as any).push(...mapped);
-        Object.keys(byId).forEach(k => delete (byId as any)[k]);
-        for (const n of mapped) (byId as any)[n.id] = n;
+        setNodes(mapped);
 
-        // 4) parsear edges "SRC>DST" a {a,b} usando IDs tal cual del backend
+        // edges "SRC>DST" -> {a,b}
         const parsed: AB[] = (data.edges || []).map((s) => {
           const [aRaw, bRaw] = String(s).split('>');
           return { a: aRaw, b: bRaw };
         });
+        setEdges(parsed);
 
-        // (opcional) diagnóstico de extremos faltantes
-        const missing = parsed.filter(e => !(byId as any)[e.a] || !(byId as any)[e.b]);
-        if (missing.length) {
-          console.warn('[EMBED] Edges con extremos no encontrados (muestra):', missing.slice(0, 10), '… total:', missing.length);
-        }
-
-        setEdgesFromApi(parsed);
-
-        // 5) fit al contenido
-        fitToContent();
+        // fit al contenido
+        // se hace en effect de resize/wheel o directo:
+        setTimeout(() => fitToContent(), 0);
 
         console.info('[EMBED] Graph cargado:', { nodes: mapped.length, edges: parsed.length });
       } catch (e) {
-        console.warn('[EMBED] Backend graph fallback → usando hardcoded:', e);
-        setEdgesFromApi([]); // usamos escenarios locales
+        console.warn('[EMBED] No se pudo cargar /infra/graph:', e);
+        setNodes([]); setEdges([]);
       }
     })();
   }, [configTick]);
 
   // --------------------------
-  // Overlay draggable por nodo (con autosave a DB)
+  // Merge de /tanks/status → color_hex en tanques
+  // --------------------------
+  const apiRoot = getApiRoot();
+  const { data: tankStatuses } = useTankStatuses(apiRoot, {
+    deviceId: (import.meta as any)?.env?.VITE_DEVICE_ID || undefined,
+    userId: undefined,
+    intervalMs: 5000,
+  });
+
+  const nodesWithStatus = useMemo(() => {
+    if (!tankStatuses) return nodes;
+    const byTankId = new Map<number, TankStatusOut>();
+    for (const r of tankStatuses) byTankId.set(r.tank_id, r);
+
+    return nodes.map(n => {
+      if (n.type !== 'tank') return n;
+      const s = n.asset_id ? byTankId.get(n.asset_id) : undefined;
+      return s ? { ...n, tank_status: s.status, tank_color_hex: s.color_hex } : n;
+    });
+  }, [nodes, tankStatuses]);
+
+
+  // --- Helpers de estado hidráulico (SIN gravedad) ---
+function isOpenValve(n: NodeBase) {
+  return n.type !== 'valve' || n.state !== 'closed'; // válvula cerrada corta
+}
+function isPumpOn(n: NodeBase) {
+  return n.type === 'pump' && n.status === 'on';
+}
+/** Regla: fluye solo si
+ *  - no hay válvulas cerradas en ninguno de los extremos, y
+ *  - hay al menos una bomba ON en A o en B
+ */
+function isEdgeActive(A: NodeBase, B: NodeBase): boolean {
+  if (!isOpenValve(A) || !isOpenValve(B)) return false;
+  return isPumpOn(A) || isPumpOn(B);
+}
+
+
+  // --------------------------
+  // Overlay draggable por nodo (con autosave)
   // --------------------------
   const DraggableOverlay: React.FC<{ id: string }> = ({ id }) => {
     const n = byId[id];
@@ -482,16 +455,16 @@ export default function App() {
       },
       setPos: (id, x, y) => {
         if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-        byId[id].x = x;
-        byId[id].y = y;
-        scheduleTick();
+        const node = byId[id];
+        if (node) { node.x = x; node.y = y; scheduleTick(); }
       },
       snap: 10,
       onEnd: () => {
-        saveLayoutToStorage(); // backup local
-        const n = byId[id];
-        if (n && Number.isFinite(n.x) && Number.isFinite(n.y)) {
-          saveNodePosToBackend(id, n.x, n.y);
+        const node = byId[id];
+        if (node && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+          // persistimos local y backend
+          saveLayoutToStorage();
+          saveNodePosToBackend(id, node.x, node.y);
         }
       },
     });
@@ -524,45 +497,48 @@ export default function App() {
           strokeWidth={edit ? 1.5 : 0}
           strokeDasharray={edit ? "4 4" : undefined}
           style={{ cursor: edit ? (pressed ? "grabbing" : "grab") : "default", touchAction: "none" }}
-          onPointerDown={(e) => {
-            setPressed(true);
-            drag.onPointerDown(e as any);
-          }}
-          onPointerUp={(e) => {
-            setPressed(false);
-            drag.onPointerUp(e as any);
-          }}
-          onPointerCancel={(e) => {
-            setPressed(false);
-            drag.onPointerUp(e as any);
-          }}
+          onPointerDown={(e) => { setPressed(true); drag.onPointerDown(e as any); }}
+          onPointerUp={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
+          onPointerCancel={(e) => { setPressed(false); drag.onPointerUp(e as any); }}
           onContextMenu={(e) => e.preventDefault()}
-          onAuxClick={(e) => {
-            if ((e as any).button === 1) {
-              e.preventDefault();
-              e.stopPropagation();
-            }
-          }}
+          onAuxClick={(e) => { if ((e as any).button === 1) { e.preventDefault(); e.stopPropagation(); } }}
         />
       </g>
     );
   };
 
   // --------------------------
-  // Reset / Export / Import
+  // Reset / Export / Import (layout local)
   // --------------------------
+  function saveLayoutToStorage() {
+    try {
+      const data = nodes.map(n => ({ id: n.id, x: n.x, y: n.y }));
+      localStorage.setItem("infra_layout", JSON.stringify(data));
+    } catch {}
+  }
+  function loadLayoutFromStorage(): Array<{ id: string; x: number; y: number }> | null {
+    try {
+      const raw = localStorage.getItem("infra_layout");
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch { return null; }
+  }
+  function exportLayout() {
+    return nodes.map(n => ({ id: n.id, x: n.x, y: n.y }));
+  }
+  function importLayout(arr: Array<{ id: string; x: number; y: number }>) {
+    const next = nodes.map(n => {
+      const hit = arr.find(a => a.id === n.id);
+      return hit ? { ...n, x: hit.x, y: hit.y } : n;
+    });
+    setNodes(next);
+  }
+
   function resetAuto() {
-    // Si querés volver al layout "demo", usá BASE_NODES en vez de NODES
-    const fresh = computeAutoLayout(NODES);
-    for (const f of fresh) {
-      if (byId[f.id]) {
-        byId[f.id].x = f.x;
-        byId[f.id].y = f.y;
-      }
-    }
+    const fresh = computeAutoLayout(nodes);
+    setNodes(fresh);
     saveLayoutToStorage();
-    scheduleTick();
-    fitToContent();
+    setTimeout(() => fitToContent(), 0);
   }
 
   function doExportJSON() {
@@ -570,9 +546,7 @@ export default function App() {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = "layout-acueducto.json";
-    a.click();
+    a.href = url; a.download = "layout-acueducto.json"; a.click();
     URL.revokeObjectURL(url);
   }
   function doImportJSON(file: File) {
@@ -582,11 +556,8 @@ export default function App() {
         const arr = JSON.parse(String(reader.result));
         importLayout(arr);
         saveLayoutToStorage();
-        scheduleTick();
-        fitToContent();
-      } catch {
-        alert("Archivo inválido");
-      }
+        setTimeout(() => { scheduleTick(); fitToContent(); }, 0);
+      } catch { alert("Archivo inválido"); }
     };
     reader.readAsText(file);
   }
@@ -601,24 +572,19 @@ export default function App() {
 
   useEffect(() => {
     const API_INFRA = getInfraBase();
-    console.group("[EMBED] Cargando agrupaciones");
-    console.log("API_INFRA:", API_INFRA);
-    console.groupEnd();
-
     setGroupsLoading(true);
     (async () => {
       try {
         const locs = await fetchJSON<InfraLocation[]>(`${API_INFRA}/locations`);
-
-        // índice code -> id (id es 'type:code' o 'type_<id>' ya presente en byId)
+        // índice code -> id (si el backend usa code para assets)
         const codeIndex = new Map<string, string>();
-        for (const n of NODES as any[]) {
-          const code = n.code ?? (typeof n.id === 'string' && n.id.includes(':') ? n.id.split(':')[1] : undefined);
-          if (code) codeIndex.set(code, n.id);
+        for (const n of nodes) {
+          // si tu backend manda code, podrías guardar n.code al mapear
+          const maybeCode = (n.id.includes(':') ? n.id.split(':')[1] : undefined);
+          if (maybeCode) codeIndex.set(maybeCode, n.id);
         }
 
         const groups: Array<{ label: string; ids: string[] }> = [];
-
         for (const loc of locs) {
           const assets = await fetchJSON<InfraAssetGroup[]>(`${API_INFRA}/locations/${loc.id}/assets`);
           const ids = Array.from(
@@ -626,7 +592,7 @@ export default function App() {
               assets
                 .flatMap((g) => g.items.map((a) => a.code || ""))
                 .map((code) => codeIndex.get(code) || "")
-                .filter((id) => !!id && (byId as any)[id])
+                .filter((id) => !!id && byId[id])
             )
           );
           if (ids.length) groups.push({ label: loc.name, ids });
@@ -642,7 +608,7 @@ export default function App() {
         setGroupsLoading(false);
       }
     })();
-  }, [configTick]);
+  }, [configTick, nodes, byId]);
 
   return (
     <div className="w-full bg-slate-50">
@@ -659,26 +625,25 @@ export default function App() {
             <Layers3 className="h-5 w-5 text-slate-700" />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-  <Button variant={edit ? "default" : "outline"} onClick={() => setEdit((e) => !e)} title="Mover nodos">
-    <Edit3 className="h-4 w-4" /> {edit ? "Editando" : "Editar"}
-  </Button>
-</div>
-
+            <Button variant={edit ? "default" : "outline"} onClick={() => setEdit((e) => !e)} title="Mover nodos">
+              <Edit3 className="h-4 w-4" /> {edit ? "Editando" : "Editar"}
+            </Button>
+            <Button variant="outline" onClick={resetAuto} title="Auto layout">Auto</Button>
+            <Button variant="outline" onClick={doExportJSON} title="Exportar layout">Exportar</Button>
+            <input ref={importInputRef} type="file" accept="application/json" className="hidden"
+                   onChange={(e) => { const f = e.target.files?.[0]; if (f) doImportJSON(f); e.currentTarget.value = ""; }} />
+            <Button variant="outline" onClick={() => importInputRef.current?.click()} title="Importar layout">Importar</Button>
+          </div>
         </div>
       </div>
 
       {/* Canvas */}
       <div className="mx-auto max-w-[1600px] px-6 py-6">
         <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-200">
-   <div className="mb-3 flex flex-wrap items-center justify-center gap-4">
-  <Legend />
-  {edit && (
-    <div className="text-sm text-emerald-700 font-medium">Modo edición</div>
-  )}
-</div>
-
-
-
+          <div className="mb-3 flex flex-wrap items-center justify-center gap-4">
+            <Legend />
+            {edit && <div className="text-sm text-emerald-700 font-medium">Modo edición</div>}
+          </div>
 
           <div className="relative w-full overflow-hidden rounded-xl border border-slate-200">
             <svg
@@ -712,36 +677,39 @@ export default function App() {
                 onAuxClick={preventMiddleAux}
               />
 
-              {/* Agrupaciones automáticas DESDE BACKEND */}
+              {/* Agrupaciones automáticas desde backend */}
               {locGroups.map((g) => (
-                <AutoGroupBox key={g.label} ids={g.ids} label={g.label} pad={102} />
+                <AutoGroupBox key={g.label} ids={g.ids} label={g.label} byId={byId} pad={102} />
               ))}
               {groupsLoading && (
-                <g>
-                  <text x={vb.x + 12} y={vb.y + 24} className="fill-slate-400 text-[12px]">
-                    Cargando agrupaciones…
-                  </text>
-                </g>
+                <g><text x={vb.x + 12} y={vb.y + 24} className="fill-slate-400 text-[12px]">Cargando agrupaciones…</text></g>
               )}
               {groupsError && (
-                <g>
-                  <text x={vb.x + 12} y={vb.y + 24} className="fill-red-500 text-[12px]">
-                    Error agrupaciones: {groupsError}
-                  </text>
-                </g>
+                <g><text x={vb.x + 12} y={vb.y + 24} className="fill-red-500 text-[12px]">Error agrupaciones: {groupsError}</text></g>
               )}
 
-              {/* Edges debajo: si vino backend, usa esas; si no, usa escenario */}
-              {edges.map((e) => {
-                const A = byId[e.a];
-                const B = byId[e.b];
-                if (!A || !B) return null;
-                if (![A.x, A.y, B.x, B.y].every((v) => Number.isFinite(v))) return null;
-                return <Edge key={`${e.a}-${e.b}-${tick}`} {...e} />;
-              })}
+              {/* Edges debajo */}
+             {edges.map((e) => {
+  const A = byId[e.a]; const B = byId[e.b];
+  if (!A || !B) return null;
+  if (![A.x, A.y, B.x, B.y].every((v) => Number.isFinite(v))) return null;
 
-              {/* Nodes + overlay draggable */}
-              {NODES.map((n) => {
+  const active = isEdgeActive(A, B); // 👈 usa los helpers nuevos
+
+  return (
+    <Edge
+      key={`${e.a}-${e.b}-${tick}`}
+      {...e}
+      active={active}
+      // opcional: si tu Edge muestra etiqueta centrada solo con A/B, podés pasar:
+      // A={A} B={B}
+    />
+  );
+})}
+
+
+              {/* Nodes + overlay draggable (pintados con color de /tanks/status si aplica) */}
+              {nodesWithStatus.map((n) => {
                 const elem =
                   n.type === "tank" ? (
                     <Tank key={n.id} n={n} />
