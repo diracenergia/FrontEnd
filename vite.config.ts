@@ -1,15 +1,17 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import path from "node:path";
+// vite.config.ts (APP)
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    // Evita tener dos React cuando el widget está linkeado
-    dedupe: ["react", "react-dom"],
+    alias: { '@': path.resolve(__dirname, 'src') },
+    dedupe: ['react', 'react-dom'],
   },
-  server: {
-    // En OneDrive/Windows a veces el watcher falla; polling lo hace más robusto
-    watch: { usePolling: true, interval: 200 },
-  },
-});
+  server: { watch: { usePolling: true, interval: 200 } }
+})

@@ -1,92 +1,41 @@
 // src/components/scada/pages/KpiView.tsx
 import React from "react";
-
-declare global {
-  interface Window {
-    KpiWidget?: {
-      mountKpiWidget?: (el: HTMLElement, props?: any) => () => void;
-    };
-  }
-}
+import { mountKpi, unmountKpi } from "@/lib/kpi-loader";
 
 export default function KpiView() {
   const ref = React.useRef<HTMLDivElement | null>(null);
-  const unmountRef = React.useRef<null | (() => void)>(null);
 
   React.useEffect(() => {
-    let disposed = false;
+    let alive = true;
 
-    // 1) Shims para bundles UMD que esperan Node/globals
-    (window as any).process = (window as any).process || { env: { NODE_ENV: "production" } };
-    (window as any).global = (window as any).global || window;
-
-    // 2) Helper para inyectar <link rel="stylesheet"> si no existe
-    const ensureCss = (href: string) => {
-      const id = `kpi-css-${href}`;
-      if (!document.getElementById(id)) {
-        const link = document.createElement("link");
-        link.id = id;
-        link.rel = "stylesheet";
-        link.href = href;
-        document.head.appendChild(link);
-      }
-    };
-
-    // 3) Helper para cargar un script solo una vez
-    const ensureScript = (src: string) =>
-      new Promise<void>((resolve, reject) => {
-        const existing = document.querySelector<HTMLScriptElement>(`script[data-kpi-src="${src}"]`);
-        if (existing) {
-          // ya insertado anteriormente; esperamos a que esté disponible
-          if (window.KpiWidget?.mountKpiWidget) return resolve();
-          existing.addEventListener("load", () => resolve());
-          existing.addEventListener("error", (e) => reject(e));
-          return;
-        }
-        const s = document.createElement("script");
-        s.async = true;
-        s.defer = true;
-        s.dataset.kpiSrc = src;
-        s.src = src;
-        s.onload = () => resolve();
-        s.onerror = (e) => reject(e);
-        document.body.appendChild(s);
-      });
-
-    // 4) Cargar assets y montar
     (async () => {
+      if (!ref.current) return;
+
       try {
-        ensureCss("/kpi/style.css");
-
-        await ensureScript("/kpi/kpi-widget.umd.js");
-
-        if (disposed) return;
-
-        if (!window.KpiWidget || typeof window.KpiWidget.mountKpiWidget !== "function") {
-          console.error("[KPI] window.KpiWidget no disponible o sin mountKpiWidget");
-          return;
-        }
-
-        if (ref.current) {
-          unmountRef.current = window.KpiWidget.mountKpiWidget(ref.current, {
-            title: "KPIs — Planta",
+        // 👇 acá va el chrome: 'none' para que el widget no pinte título ni card
+        const { version } = await mountKpi(
+          ref.current,
+          {
+            chrome: "none",
             compact: false,
-            // podés pasar props.data si tenés datos reales:
-            // data: {...}
-          });
-        }
+            // data: { ... }  // si querés pasarle datos
+          },
+          {
+            version: (import.meta.env.DEV ? "dev-" : "prod-") + Date.now(), // cache bust
+            // jsUrl / cssUrl si querés overridear rutas
+          }
+        );
+
+        if (!alive) return;
+        console.log("[KpiView] widget mounted, version =", version);
       } catch (e) {
-        console.error("[KPI] fallo cargando bundle", e);
+        console.error("[KpiView] mount FAIL", e);
       }
     })();
 
     return () => {
-      disposed = true;
-      if (unmountRef.current) {
-        try {
-          unmountRef.current();
-        } catch {}
-      }
+      alive = false;
+      try { unmountKpi(); } catch {}
     };
   }, []);
 

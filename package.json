@@ -3,16 +3,28 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
+  "workspaces": [
+    "kpi"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "build:infra": "cd infraestructura && npm ci && npm run build",
-    "postbuild:infra": "powershell -Command \"Remove-Item -Recurse -Force public\\infraestructura -ErrorAction Ignore; robocopy infraestructura\\dist public\\infraestructura /E\"",
+    "postbuild:infra": "powershell -Command \"Remove-Item -Recurse -Force public\\infraestructura -ErrorAction Ignore; New-Item -ItemType Directory -Force public\\infraestructura > $null; robocopy infraestructura\\dist public\\infraestructura /E\"",
     "deploy:infra": "npm run build:infra && npm run postbuild:infra",
-    "build:all": "npm run deploy:infra && npm run build"
+    "build:kpi:dev": "npm --workspace kpi run build:dev",
+    "build:kpi:prod": "npm --workspace kpi run build:prod",
+    "kpi:watch": "npm --workspace kpi run build:watch",
+    "copy:kpi": "powershell -Command \"Remove-Item -Recurse -Force public\\kpi -ErrorAction Ignore; New-Item -ItemType Directory -Force public\\kpi > $null; robocopy kpi\\dist public\\kpi *.* /E\"",
+    "copy:kpi:watch": "chokidar \"kpi/dist/**/*\" -c \"npm run copy:kpi\"",
+    "kpi:dev": "npm run build:kpi:dev && npm run copy:kpi",
+    "kpi:prod": "npm run build:kpi:prod && npm run copy:kpi",
+    "dev:all": "concurrently -n KPI,COPY,APP -c magenta,yellow,cyan \"npm run kpi:watch\" \"npm run copy:kpi:watch\" \"vite\"",
+    "build:all": "npm run deploy:infra && npm run kpi:prod && npm run build"
   },
   "dependencies": {
+    "kpi-embed": "workspace:*",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^7.9.1",
@@ -23,6 +35,8 @@
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^5.0.2",
     "autoprefixer": "^10.4.16",
+    "chokidar-cli": "^3.0.0",
+    "concurrently": "^9.2.1",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.3.3",
     "typescript": "^5.2.2",

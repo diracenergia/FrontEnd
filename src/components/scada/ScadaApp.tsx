@@ -18,6 +18,14 @@ import { connectTelemetryWS, onWS } from "../../lib/ws";
 // 🔔 REST para alarmas (fallback si no llegan por WS)
 import { api, infra2 } from "../../lib/api";
 
+// 🧪 Debug KPI (logs y contadores)
+import {
+  logReactEnv,
+  logCustomElementsStatus,
+  logSWAndCaches,
+  patchCreateRootForCounting,
+} from "../../debug/kpiDebug";
+
 const DEFAULT_THRESHOLDS = { lowCritical: 10, lowWarning: 25, highWarning: 80, highCritical: 90 };
 
 // Umbrales de “online” por latencia del último heartbeat del dispositivo
@@ -26,9 +34,6 @@ const ONLINE_CRIT_SEC = Number((import.meta as any).env?.VITE_WS_CRIT_SEC ?? 120
 
 // Poll de alarmas (0 = deshabilitado)
 const ALARMS_POLL_MS = Number((import.meta as any).env?.VITE_ALARMS_POLL_MS ?? 5000);
-
-
-
 
 // === Tipos locales para mapeo de localidades (lo que espera OverviewGrid) ===
 type AssetLocLink = {
@@ -43,8 +48,8 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   const location = useLocation();
 
   const [tab, setTab] = React.useState<
-  "overview" | "alarms" | "trends" | "settings" | "audit" | "infra" | "kpi"
->("overview");
+    "overview" | "alarms" | "trends" | "settings" | "audit" | "infra" | "kpi"
+  >("overview");
 
   const [drawer, setDrawer] = React.useState<{ type: "tank" | "pump" | null; id?: string | number | null }>({ type: null });
   const [user] = React.useState<User>(initialUser || { id: "u1", name: "operador@rdls", role: "operador" });
@@ -62,20 +67,16 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   // === NUEVO: mapeo de localidades para agrupar el Overview ===
   const [assetLocs, setAssetLocs] = React.useState<AssetLocLink[] | null>(null);
 
+  // 🧪 KPI debug: refs para parchear/desparchear createRoot
+  const kpiPatchedRef = React.useRef(false);
+  const kpiUnpatchRef = React.useRef<undefined | (() => void)>();
+
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         // Usamos la API tipada del proyecto (usa VITE_API_URL, API key y X-Org-Id)
         const locs = await infra2.locations();
-        // Si querés paralelizar:
-        // const allByLoc = await Promise.all(locs.map(l => infra2.locAssets(l.id).then(gs => ({ loc: l, groups: gs }))));
-        // const all: AssetLocLink[] = allByLoc.flatMap(({loc, groups}) => groups.flatMap(g =>
-        //   (g.type === "tank" || g.type === "pump") ? g.items.map(it => ({
-        //     asset_type: g.type, asset_id: it.id, location_id: loc.id, code: loc.code, name: loc.name
-        //   })) : []
-        // ));
-        // setAssetLocs(all);
 
         const all: AssetLocLink[] = [];
         for (const loc of locs) {
@@ -117,6 +118,28 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   // 🔎 LOG: cambios de tab
   React.useEffect(() => {
     console.log("[ScadaApp] tab ->", tab);
+  }, [tab]);
+
+  // 🧪 Cuando entro a la pestaña KPI, logueo entorno y parcheo createRoot para contar montajes
+  React.useEffect(() => {
+    if (tab === "kpi") {
+      console.groupCollapsed("%c[KPI][debug] enter tab", "color:#0a7");
+      logReactEnv("ScadaApp->KPI");
+      logCustomElementsStatus(["kpi-widget", "kpi-widget-v012", "kpi-widget-v013"]);
+      void logSWAndCaches();
+      console.groupEnd();
+
+      if (!kpiPatchedRef.current) {
+        kpiUnpatchRef.current = patchCreateRootForCounting();
+        kpiPatchedRef.current = true;
+      }
+    } else {
+      if (kpiPatchedRef.current && kpiUnpatchRef.current) {
+        kpiUnpatchRef.current();
+        kpiUnpatchRef.current = undefined;
+        kpiPatchedRef.current = false;
+      }
+    }
   }, [tab]);
 
   // 🔎 LOG: cambios grandes del plant (solo resumen)
@@ -279,51 +302,54 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   }, [plant, beats]);
 
   const body =
-  tab === "overview" ? (
-    <OverviewGrid
-      plant={plant}
-      assetLocs={assetLocs ?? undefined}
-      onOpenTank={(id) => setDrawer({ type: "tank", id })}
-      onOpenPump={(id) => setDrawer({ type: "pump", id })}
-      statusByKey={statusByKey}
-      debug
-    />
-  ) : tab === "alarms" ? (
-    <AlarmsPage plant={plant} setPlant={setPlant} user={user} onAudit={(evt: any) => logAction(evt)} />
-  ) : tab === "trends" ? (
-    <TrendsPage />
-  ) : tab === "settings" ? (
-    <SettingsPage
-      plant={plant}
-      setPlant={(updater: any) => {
-        setPlant((prev: any) => {
-          const next = typeof updater === "function" ? updater(prev) : updater;
-          (prev.tanks || []).forEach((t: any, i: number) => {
-            const n = (next.tanks || [])[i];
-            if (!n) return;
-            if (JSON.stringify(t.thresholds) !== JSON.stringify(n.thresholds)) {
-              const permitted = hasPerm(user, "canEditSetpoints");
-              logAction({
-                action: "EDIT_THRESHOLD",
-                asset: t.id,
-                details: JSON.stringify(n.thresholds),
-                result: permitted ? "ok" : "denied",
-              });
-            }
+    tab === "overview" ? (
+      <OverviewGrid
+        plant={plant}
+        assetLocs={assetLocs ?? undefined}
+        onOpenTank={(id) => setDrawer({ type: "tank", id })}
+        onOpenPump={(id) => setDrawer({ type: "pump", id })}
+        statusByKey={statusByKey}
+        debug
+      />
+    ) : tab === "alarms" ? (
+      <AlarmsPage plant={plant} setPlant={setPlant} user={user} onAudit={(evt: any) => logAction(evt)} />
+    ) : tab === "trends" ? (
+      <TrendsPage />
+    ) : tab === "settings" ? (
+      <SettingsPage
+        plant={plant}
+        setPlant={(updater: any) => {
+          setPlant((prev: any) => {
+            const next = typeof updater === "function" ? updater(prev) : updater;
+            (prev.tanks || []).forEach((t: any, i: number) => {
+              const n = (next.tanks || [])[i];
+              if (!n) return;
+              if (JSON.stringify(t.thresholds) !== JSON.stringify(n.thresholds)) {
+                const permitted = hasPerm(user, "canEditSetpoints");
+                logAction({
+                  action: "EDIT_THRESHOLD",
+                  asset: t.id,
+                  details: JSON.stringify(n.thresholds),
+                  result: permitted ? "ok" : "denied",
+                });
+              }
+            });
+            return next;
           });
-          return next;
-        });
-      }}
-      user={user}
-    />
-  ) : tab === "audit" ? (
-    <AuditPage audit={auditRows} />
-  ) : tab === "kpi" ? (
-    // 👇 NUEVO: render de la vista que monta el widget
-    <KpiView />
-  ) : (
-    <InfraestructuraPage />
-  );
+        }}
+        user={user}
+      />
+    ) : tab === "audit" ? (
+      <AuditPage audit={auditRows} />
+    ) : tab === "kpi" ? (
+      // 👇 KPI: log de render para rastrear re-renders de la vista
+      <>
+        {console.log("[KPI] render <KpiView/>")}
+        <KpiView />
+      </>
+    ) : (
+      <InfraestructuraPage />
+    );
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
@@ -339,16 +365,13 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
             </div>
 
             <nav className="space-y-1">
-              
               <NavItem label="Infraestructura" active={tab === "infra"} onClick={() => setTab("infra")} />
               <NavItem label="Operaciones" active={tab === "overview"} onClick={() => setTab("overview")} />
               <NavItem label="KPIs" active={tab === "kpi"} onClick={() => setTab("kpi")} />
               {/*<NavItem label="Alarmas" active={tab === "alarms"} onClick={() => setTab("alarms")} /> */}
               {/*<NavItem label="Tendencias" active={tab === "trends"} onClick={() => setTab("trends")} /> */}
               <NavItem label="Configuración" active={tab === "settings"} onClick={() => setTab("settings")} />
-               {/*<NavItem label="Auditoría" active={tab === "audit"} onClick={() => setTab("audit")} /> */}
-              
-
+              {/*<NavItem label="Auditoría" active={tab === "audit"} onClick={() => setTab("audit")} /> */}
             </nav>
           </div>
 
