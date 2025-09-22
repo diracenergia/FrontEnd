@@ -1,13 +1,7 @@
-// kpi/tailwind.config.cjs
-module.exports = {
-  content: ["./src/**/*.{ts,tsx,js,jsx}"],
-  theme: {
-    extend: {},
-  },
-  // 👇 ¡IMPORTANTE!: debe ser un ARRAY (aunque esté vacío)
-  plugins: [
-    // Si después querés tipografía/forms, va así:
-    // require('@tailwindcss/typography'),
-    // require('@tailwindcss/forms'),
-  ],
-}
+import type { Config } from 'tailwindcss'
+
+export default {
+  content: ['./index.html', './src/**/*.{ts,tsx,js,jsx}'],
+  theme: { extend: {} },
+  plugins: [],
+} satisfies Config

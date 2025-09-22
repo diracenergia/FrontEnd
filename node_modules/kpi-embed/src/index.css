@@ -1,25 +1,14 @@
-/* kpi/src/index.css */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-/* El lienzo del widget puede recibir el color por prop (inline style) o var */
 :root {
-  --kpi-page-bg: transparent;
+  --radius: 12px;
 }
 
-.kpi-root {
-  background: var(--kpi-page-bg);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+html, body, #root {
+  height: 100%;
 }
 
-.kpi-root,
-.kpi-root * {
-  box-sizing: border-box;
-}
-
-/* pequeño ajuste para legends de Recharts */
-.kpi-root .recharts-legend-wrapper {
-  margin-top: 0.25rem;
+body {
+  /* lo mismo que antes, pero funciona igual en v4 */
+  @apply bg-gray-50 text-gray-900;
 }

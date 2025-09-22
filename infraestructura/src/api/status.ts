@@ -36,20 +36,9 @@ function buildHeaders(opts: StatusFetchOpts = {}) {
 
   if (key) { h['X-API-Key'] = key; h['Authorization'] = `Bearer ${key}` }
   if (org) { h['X-Org-Id'] = String(org) }
-  // ⬅️ ESTE ES EL QUE TE FALTABA (provoca 422 si el dep lo exige)
   if (device) { h['X-Device-Id'] = device }
 
   return h
 }
 
-export async function fetchTankStatuses(apiRoot: string, opts: StatusFetchOpts = {}): Promise<TankStatusOut[]> {
-  const url = `${apiRoot.replace(/\/+$/, '')}/tanks/status`
-  const r = await fetch(url, { method: 'GET', headers: buildHeaders(opts), mode: 'cors' })
-  if (!r.ok) {
-    // Intenta mostrar detalle de FastAPI para diagnosticar rápido
-    let detail = ''
-    try { detail = JSON.stringify(await r.json()) } catch {}
-    throw new Error(`GET /tanks/status -> ${r.status} ${r.statusText}${detail ? ' • ' + detail : ''}`)
-  }
-  return r.json()
-}
+// Aquí eliminamos la función fetchTankStatuses, ya que ahora todo se obtiene desde el gráfico.

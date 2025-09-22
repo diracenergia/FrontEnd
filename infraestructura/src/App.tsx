@@ -92,11 +92,14 @@ function getHttpDefault(): string {
   const origin = typeof window !== "undefined" ? trimSlash(window.location.origin) : "";
   const isViteDev = /^http:\/\/(localhost|127\.0\.0\.1):517\d$/i.test(origin);
   if (isViteDev) {
-    console.warn("[EMBED][WARN] Origin dev Vite:", origin, "→ usando backend http://127.0.0.1:8000");
-    return "http://127.0.0.1:8000";
+    
+    return "https://backend-v85n.onrender.com"; // Asegúrate de que esta URL esté correcta para dev y prod
   }
-  return origin || "http://127.0.0.1:8000";
+  return origin || "https://backend-v85n.onrender.com"; // Esta es la URL final para producción
 }
+
+
+
 /** Base HTTP para /infra (ENV > LS > default coherente) */
 function getInfraBase(): string {
   const e = envAny();
@@ -109,13 +112,14 @@ function getInfraBase(): string {
   }
   return finalBase;
 }
+
 /** API Key (ENV > LS > sin fallback) */
 function getApiKey(): string {
   const e = envAny();
   const envKey = String(e?.VITE_API_KEY || "");
   const lsKey  = typeof localStorage !== "undefined" ? String(localStorage.getItem("apiKey") || "") : "";
   const key = envKey || lsKey || "";
-  if (!key) console.warn("[EMBED][WARN] API Key ausente.");
+  
   return key;
 }
 /** Org Id (ENV > LS > default "1") */
@@ -136,7 +140,7 @@ function infraHeaders(): HeadersInit {
 }
 async function fetchJSON<T>(url: string): Promise<T> {
   const headers = infraHeaders();
-  console.groupCollapsed("[FETCH] GET", url);
+  console.groupCollapsed("[FETCH] GET", url); // <-- Aquí se agrega el log para la solicitud
   console.log("base:", getInfraBase());
   console.log("orgId:", getOrgId());
   console.log("apiKey:", getApiKey() ? "(set)" : "(missing)");
@@ -148,7 +152,7 @@ async function fetchJSON<T>(url: string): Promise<T> {
     let text = "";
     try { text = await r.text(); } catch {}
     const diag = `(${r.status}) ${r.statusText} • base=${getInfraBase()} • org=${getOrgId()} • key=${getApiKey() ? "set" : "missing"}`;
-    console.error("[FETCH][ERROR]", url, diag, text);
+    console.error("[FETCH][ERROR]", url, diag, text); // <-- Aquí también un log de error si la solicitud falla
     throw new Error(`${diag}${text ? " • " + text : ""}`);
   }
   return r.json() as Promise<T>;
@@ -179,8 +183,9 @@ function getApiRoot(): string {
   const envBase = trimSlash(e?.VITE_API_URL || e?.VITE_API_HTTP_URL || "");
   const lsBase  = typeof localStorage !== "undefined" ? trimSlash(localStorage.getItem("apiBase") || "") : "";
   const base    = trimSlash(envBase || lsBase || getHttpDefault());
-  return base; // p.ej. http://127.0.0.1:8000
+  return base; // Esto ahora usará https://backend-v85n.onrender.com
 }
+
 
 /* ============================
    Types para /infra/graph
@@ -344,12 +349,14 @@ useEffect(() => {
   // --------------------------
   // Cargar GRAFO DESDE BACKEND
   // --------------------------
-  useEffect(() => {
-    (async () => {
-      try {
-        const API_INFRA = getInfraBase();
-        const data = await fetchJSON<ApiGraph>(`${API_INFRA}/graph`);
-        // mapear nodos API -> NodeBase (id estable del backend)
+ useEffect(() => {
+  (async () => {
+    try {
+      const API_INFRA = getInfraBase();
+      const data = await fetchJSON<ApiGraph>(`${API_INFRA}/graph`);
+
+      // Verificamos que 'data.nodes' sea un arreglo
+      if (Array.isArray(data.nodes)) {
         let mapped: NodeBase[] = (data.nodes || []).map((n) => {
           const id = n.id || (n.code ? `${n.type}:${n.code}` : `${n.type}_${n.asset_id ?? ''}`);
           const base: NodeBase = {
@@ -358,7 +365,6 @@ useEffect(() => {
             name: n.name,
             x: Number.isFinite(n.x) ? (n.x as number) : 0,
             y: Number.isFinite(n.y) ? (n.y as number) : 0,
-            // asset_id para cruzar con /tanks/status
             asset_id: typeof n.asset_id === 'number' ? n.asset_id : undefined,
           };
           if (n.type === 'tank')  { base.level = n.level ?? undefined; base.capacity = n.capacity ?? undefined; }
@@ -367,7 +373,7 @@ useEffect(() => {
           return base;
         });
 
-        // autolayout si no vinieron posiciones
+        // Si los nodos no tienen posiciones, se realiza un layout automático
         const needLayout = mapped.some(m => !Number.isFinite(m.x) || !Number.isFinite(m.y));
         if (needLayout) mapped = computeAutoLayout(mapped);
 
@@ -380,39 +386,49 @@ useEffect(() => {
         });
         setEdges(parsed);
 
-        // fit al contenido
-        // se hace en effect de resize/wheel o directo:
+        // Ajustamos el lienzo para que se ajuste a los nodos
         setTimeout(() => fitToContent(), 0);
 
         console.info('[EMBED] Graph cargado:', { nodes: mapped.length, edges: parsed.length });
-      } catch (e) {
-        console.warn('[EMBED] No se pudo cargar /infra/graph:', e);
-        setNodes([]); setEdges([]);
+      } else {
+        throw new Error("data.nodes no es un arreglo válido");
       }
-    })();
-  }, [configTick]);
+    } catch (e) {
+      console.warn('[EMBED] No se pudo cargar /infra/graph:', e);
+      setNodes([]); setEdges([]);
+    }
+  })();
+}, [configTick]);
+
+
 
   // --------------------------
   // Merge de /tanks/status → color_hex en tanques
   // --------------------------
   const apiRoot = getApiRoot();
-  const { data: tankStatuses } = useTankStatuses(apiRoot, {
-    deviceId: (import.meta as any)?.env?.VITE_DEVICE_ID || undefined,
-    userId: undefined,
-    intervalMs: 5000,
-  });
+const { data: tankStatuses } = useTankStatuses(apiRoot, {
+  deviceId: (import.meta as any)?.env?.VITE_DEVICE_ID || undefined,
+  userId: undefined,
+  intervalMs: 5000,
+});
 
   const nodesWithStatus = useMemo(() => {
-    if (!tankStatuses) return nodes;
-    const byTankId = new Map<number, TankStatusOut>();
-    for (const r of tankStatuses) byTankId.set(r.tank_id, r);
+  if (!tankStatuses) return nodes;
+  const byTankId = new Map<number, TankStatusOut>();
+  for (const r of tankStatuses) byTankId.set(r.tank_id, r);
 
-    return nodes.map(n => {
-      if (n.type !== 'tank') return n;
-      const s = n.asset_id ? byTankId.get(n.asset_id) : undefined;
-      return s ? { ...n, tank_status: s.status, tank_color_hex: s.color_hex } : n;
-    });
-  }, [nodes, tankStatuses]);
+  return nodes.map(n => {
+    if (n.type !== 'tank') return n;
+    const s = n.asset_id ? byTankId.get(n.asset_id) : undefined;
+    return s ? { 
+      ...n, 
+      tank_status: s.status, 
+      tank_color_hex: s.color_hex,
+      tank_level: s.level_percent ?? undefined // Asegúrate de incluir el nivel
+    } : n;
+  });
+}, [nodes, tankStatuses]);
+
 
 
   // --- Helpers de estado hidráulico (SIN gravedad) ---

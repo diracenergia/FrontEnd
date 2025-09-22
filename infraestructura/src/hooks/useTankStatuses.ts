@@ -1,31 +1,51 @@
-// src/hooks/useTankStatuses.ts
 import { useEffect, useState } from 'react'
-import { fetchTankStatuses, type TankStatusOut, type StatusFetchOpts } from '@/api/status'
 
-export default function useTankStatuses(
-  apiRoot: string,
-  opts: { intervalMs?: number } & StatusFetchOpts = {}
-) {
-  const [data, setData] = useState<TankStatusOut[] | null>(null)
+type Node = {
+  id: string;
+  type: string;
+  level?: number;
+  name: string;
+}
+
+type TankStatusOut = {
+  tank_id: string;
+  level: number;
+}
+
+export default function useTankStatuses(nodes: Node[]) {
+  const [tankStatuses, setTankStatuses] = useState<TankStatusOut[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const interval = opts.intervalMs ?? 5000
 
   useEffect(() => {
-    let alive = true
+    console.log("[useTankStatuses] Inicio de la función con los nodos:", nodes);
 
-    const load = async () => {
-      try {
-        const d = await fetchTankStatuses(apiRoot, opts)
-        if (alive) { setData(d); setError(null) }
-      } catch (e: any) {
-        if (alive) setError(String(e?.message || e))
+    try {
+      // Validamos si 'nodes' es un arreglo antes de proceder
+      if (!Array.isArray(nodes)) {
+        throw new Error("Los nodos no son un arreglo válido.");
       }
+
+      // Filtrar los nodos de tipo 'tank' y extraer su nivel
+      const filteredTanks = nodes
+        .filter(node => node.type === 'tank');  // Filtramos los nodos de tipo 'tank'
+      
+      console.log("[useTankStatuses] Nodos de tipo 'tank' encontrados:", filteredTanks);
+
+      const tankData = filteredTanks.map((tank) => ({
+        tank_id: tank.id,
+        level: tank.level || 0,  // Si no hay nivel, asignamos un valor por defecto de 0
+      }));
+
+      console.log("[useTankStatuses] Datos de los tanques procesados:", tankData);
+
+      setTankStatuses(tankData);
+      setError(null);  // Si no hay error, limpiamos el estado de error
+    } catch (e: any) {
+      // En caso de error, lo capturamos y lo guardamos en el estado
+      console.error("[useTankStatuses] Error en el procesamiento de los estados de los tanques:", e);
+      setError(`Error al procesar los estados de los tanques: ${e.message}`);
     }
+  }, [nodes]); // Dependemos de los cambios en los nodos para actualizar el estado
 
-    load()
-    const t = setInterval(load, interval)
-    return () => { alive = false; clearInterval(t) }
-  }, [apiRoot, interval, opts.apiKey, opts.orgId, opts.deviceId])
-
-  return { data, error }
+  return { tankStatuses, error }
 }

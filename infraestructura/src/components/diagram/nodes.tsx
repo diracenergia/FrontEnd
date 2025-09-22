@@ -90,33 +90,33 @@ function fmtCap(v?: number | null) {
 }
 
 export function Tank({ n }: { n: NodeBase }) {
-  const level = Math.max(0, Math.min(1, n.level ?? 0))
-  const stroke = n.tank_color_hex || '#94a3b8' // color desde /tanks/status (fallback gris)
+  const level = Math.max(0, Math.min(1, n.tank_level ?? 0)); // Usar tank_level que proviene de /tanks/status
+  const stroke = n.tank_color_hex || '#94a3b8'; // Color desde /tanks/status (fallback gris)
 
   // ids únicos por nodo para gradientes/máscaras
-  const gid = (suffix: string) => `tank-${n.id}-${suffix}`
+  const gid = (suffix: string) => `tank-${n.id}-${suffix}`;
 
   // Geometría base
-  const outerW = 132
-  const outerH = 96
-  const outerRX = 16
+  const outerW = 132;
+  const outerH = 96;
+  const outerRX = 16;
 
-  const innerW = 100
-  const innerH = 60
-  const innerRX = 10
+  const innerW = 100;
+  const innerH = 60;
+  const innerRX = 10;
 
   // Top-left de cada rect
-  const outerX = n.x - outerW / 2
-  const outerY = n.y - outerH / 2
-  const innerX = n.x - innerW / 2
-  const innerY = n.y - innerH / 2
+  const outerX = n.x - outerW / 2;
+  const outerY = n.y - outerH / 2;
+  const innerX = n.x - innerW / 2;
+  const innerY = n.y - innerH / 2;
 
   // Altura de la columna de nivel
-  const levelH = innerH * level
-  const levelY = innerY + (innerH - levelH)
+  const levelH = innerH * level;
+  const levelY = innerY + (innerH - levelH);
 
   // Colorcito del chip de estado (si viene)
-  const statusFill = stroke
+  const statusFill = stroke;
 
   return (
     <g>
@@ -127,27 +127,27 @@ export function Tank({ n }: { n: NodeBase }) {
       <defs>
         {/* Gradiente del chasis (metal/plástico) */}
         <linearGradient id={gid('body')} x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%"  stopColor="#ffffff" />
+          <stop offset="0%" stopColor="#ffffff" />
           <stop offset="60%" stopColor="#f1f5f9" />
           <stop offset="100%" stopColor="#e2e8f0" />
         </linearGradient>
 
         {/* Brillo diagonal del borde */}
         <linearGradient id={gid('stroke')} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%"   stopColor={stroke} stopOpacity="1" />
+          <stop offset="0%" stopColor={stroke} stopOpacity="1" />
           <stop offset="100%" stopColor={stroke} stopOpacity=".7" />
         </linearGradient>
 
         {/* Agua */}
         <linearGradient id={gid('water')} x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%"   stopColor="#7dd3fc" />   {/* sky-300 */}
+          <stop offset="0%" stopColor="#7dd3fc" />   {/* sky-300 */}
           <stop offset="100%" stopColor="#38bdf8" />   {/* sky-400 */}
         </linearGradient>
 
         {/* Gloss (reflejo) */}
         <linearGradient id={gid('gloss')} x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%"   stopColor="#ffffff" stopOpacity=".7" />
-          <stop offset="60%"  stopColor="#ffffff" stopOpacity=".15" />
+          <stop offset="0%" stopColor="#ffffff" stopOpacity=".7" />
+          <stop offset="60%" stopColor="#ffffff" stopOpacity=".15" />
           <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
         </linearGradient>
 
@@ -207,8 +207,9 @@ export function Tank({ n }: { n: NodeBase }) {
         </g>
       )}
     </g>
-  )
+  );
 }
+
 
 
 /* =============================================================
