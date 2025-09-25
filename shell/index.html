@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Shell</title>
+    <style>
+      body { font-family: system-ui, sans-serif; padding: 16px; }
+      .box { border: 2px dashed #999; padding: 12px; margin: 12px 0; }
+      #kpi-root iframe { width: 100%; min-height: 420px; display: block; }
+      .muted { color: #666; font-size: 14px; }
+      code { background: #f6f6f6; padding: 2px 6px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Shell OK</h1>
+    <p class="muted">Si no ves el KPI abajo, abrí <code>/apps.manifest.json</code> para confirmar que se está sirviendo.</p>
+
+    <div id="users-root" class="box">users-root (vacío)</div>
+    <div id="wc-root" class="box">wc-root (vacío)</div>
+    <div id="logs-root" class="box">logs-root (vacío)</div>
+
+    <div id="kpi-root" class="box">
+      <strong>KPI</strong>
+      <div class="muted">Aquí debería aparecer un <code>&lt;iframe&gt;</code> a <code>http://127.0.0.1:5180/</code></div>
+    </div>
+
+    <div id="infra-root" style="border:2px dashed #999; padding:12px; margin:12px 0">
+  <strong>Infraestructura</strong>
+</div>
+
+
+    <pre id="manifest-dump" class="box muted">Manifest: (cargando...)</pre>
+
+    <script type="module">
+      import { loadApps } from './src/loader';
+
+      // Dump visual del manifest
+      fetch('/apps.manifest.json')
+        .then(r => r.text())
+        .then(t => {
+          document.querySelector('#manifest-dump').textContent =
+            'Manifest:\n' + t;
+        })
+        .catch(err => {
+          document.querySelector('#manifest-dump').textContent =
+            'Manifest: ERROR -> ' + err?.message;
+        });
+
+      // Carga de apps
+      try {
+        const api = { version: '1.0.0' };
+        await loadApps('/apps.manifest.json', api);
+        console.log('[shell] loadApps OK');
+      } catch (e) {
+        console.error('[shell] loadApps ERROR', e);
+      }
+    </script>
+  </body>
+</html>

@@ -1,56 +1,49 @@
-import { defineConfig } from 'vite'
+// vite.config.ts
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath, URL } from 'node:url'
 
-export default defineConfig({
-  // Usá import.meta.env.PROD (propio de Vite) en lugar de process.env.NODE_ENV
-  base: import.meta.env.PROD ? '/FrontEnd/infraestructura/' : '/',
+// https://vitejs.dev/config/
+export default defineConfig(({ mode }) => {
+  // Carga variables del .env (opcional)
+  const env = loadEnv(mode, process.cwd(), '')
+  const isProd = mode === 'production'
 
-  plugins: [react()],
+  return {
+    // En dev: '/', en prod: tu subcarpeta de deploy
+    // Cambiá este string si tu app se sirve en otra ruta
+    base: isProd ? '/FrontEnd/infraestructura/' : '/',
 
-  resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
-    },
-  },
+    plugins: [react()],
 
-  server: {
-    port: 5174,
-    strictPort: true,
-    open: false,
-    proxy: {
-      '/infra': {
-        target: 'https://backend-v85n.onrender.com',
-        changeOrigin: true,
-        secure: false, // opcional
-      },
-      '/conn': {
-        target: 'https://backend-v85n.onrender.com',
-        changeOrigin: true,
-        secure: false,
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
       },
     },
-  },
 
-  preview: {
-    port: 5175,
-    strictPort: true,
-  },
-
-  build: {
-    outDir: 'dist',
-    assetsDir: 'assets',
-    sourcemap: true,
-    chunkSizeWarningLimit: 600,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          react: ['react', 'react-dom'],
-          recharts: ['recharts'],
-        },
-      },
+    server: {
+      port: Number(env.VITE_PORT) || 5173,
+      host: true,
+      open: true,
     },
-  },
 
-  envPrefix: 'VITE_',
+    preview: {
+      port: Number(env.VITE_PREVIEW_PORT) || 4173,
+      host: true,
+    },
+
+    build: {
+      outDir: 'dist',
+      target: 'esnext',
+      sourcemap: !isProd,
+      // vacía outDir antes de compilar (por defecto true en Vite 5)
+      // emptyOutDir: true,
+    },
+
+    // Ejemplo: inyectar constantes de build (opcional)
+    define: {
+      __APP_VERSION__: JSON.stringify(env.VITE_APP_VERSION || 'dev'),
+    },
+  }
 })
