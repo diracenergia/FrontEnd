@@ -1,4 +1,3 @@
-// src/hooks/usePresenceSimple.ts
 import { useEffect, useRef, useState } from "react";
 import { fetchPresenceSimple, PresenceItem } from "@/lib/presence";
 
@@ -18,15 +17,12 @@ export function usePresenceSimple(apiRoot: string, pollMs = 10000) {
       try {
         const arr = await fetchPresenceSimple(apiRoot);
         if (!cancelled) {
-          // Actualizamos el Map con la última foto de presencia
-          mapRef.current.clear();
-          for (const i of arr) {
-            mapRef.current.set(i.node_id, i);
-          }
-          setTick(x => x + 1); // fuerza re-render ligero
+          mapRef.current.clear(); // snapshot fresco
+          for (const i of arr) mapRef.current.set(i.node_id, i);
+          setTick(x => x + 1);
         }
       } catch {
-        // silencio: si falla, dejamos el último estado conocido
+        // silencio: dejamos último estado conocido
       }
     }
 

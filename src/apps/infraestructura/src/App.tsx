@@ -325,7 +325,8 @@ export default function App() {
     const base = (typeof nodesWithStatus !== "undefined" && nodesWithStatus) ? nodesWithStatus : nodes;
     return base.map((n) => {
       const p = getPresence?.(n.id);
-      return p ? { ...n, conn_tone: p.tone } : n;
+      return { ...n, conn_tone: (p?.tone ?? "unknown") };
+
     });
   }, [nodes, (typeof nodesWithStatus !== "undefined" ? nodesWithStatus : null), getPresence, presenceTick]);
 
