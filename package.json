@@ -3,30 +3,34 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "workspaces": ["kpi", "infraestructura"],
   "engines": { "node": ">=20" },
 
   "scripts": {
     "// dev --------------------------------": "",
     "dev": "vite",
-    "dev:apps": "concurrently -n KPI,INFRA -c magenta,green \"pnpm -C kpi dev\" \"pnpm -C infraestructura dev\"",
-    "dev:all": "concurrently -n APPS,APP -c yellow,cyan \"pnpm dev:apps\" \"pnpm dev\"",
+
+    "dev:kpi": "pnpm -C src/apps/kpi dev -- --host 127.0.0.1 --port 5174 --strictPort",
+    "dev:infra": "pnpm -C src/apps/infraestructura dev -- --host 127.0.0.1 --port 5181 --strictPort",
+
+    "dev:apps": "concurrently -k -n KPI,INFRA -c magenta,green \"pnpm dev:kpi\" \"pnpm dev:infra\"",
+    "dev:all": "concurrently -k -n APPS,APP -c yellow,cyan \"pnpm dev:apps\" \"pnpm dev\"",
 
 
     "// build (prod) ------------------------": "",
     "build": "vite build",
+    "build:kpi": "pnpm -C src/apps/kpi build",
+    "build:infra": "pnpm -C src/apps/infraestructura build",
+    "build:all": "pnpm run build:infra && pnpm run build:kpi && pnpm run build",
 
-    "build:kpi": "pnpm -C kpi build",
-    "copy:kpi": "shx rm -rf public/kpi && shx mkdir -p public/kpi && shx cp -r kpi/dist/* public/kpi/",
+    "// (opcional) copiar bundles externos en /public --------": "",
+    "copy:kpi": "shx rm -rf public/kpi && shx mkdir -p public/kpi && shx cp -r src/apps/kpi/dist/* public/kpi/",
+    "copy:infra": "shx rm -rf public/infraestructura && shx mkdir -p public/infraestructura && shx cp -r src/apps/infraestructura/dist/* public/infraestructura/",
+    "build:external": "pnpm run build:infra && pnpm run copy:infra && pnpm run build:kpi && pnpm run copy:kpi",
+    "copy:kpi:watch": "chokidar \"src/apps/kpi/dist/**/*\" -c \"pnpm run copy:kpi\"",
 
-    "build:infra": "pnpm -C infraestructura build",
-    "copy:infra": "shx rm -rf public/infraestructura && shx mkdir -p public/infraestructura && shx cp -r infraestructura/dist/* public/infraestructura/",
 
-    "build:external": "pnpm build:infra && pnpm copy:infra && pnpm build:kpi && pnpm copy:kpi",
-    "build:all": "pnpm build:external && pnpm build",
-
-    "// opcional: watch de copias ----------": "",
-    "copy:kpi:watch": "chokidar \"kpi/dist/**/*\" -c \"pnpm copy:kpi\""
+    "// preview estático --------------------": "",
+    "preview": "vite preview --strictPort"
   },
 
   "dependencies": {

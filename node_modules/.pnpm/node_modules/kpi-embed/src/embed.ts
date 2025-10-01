@@ -15,6 +15,12 @@ declare global {
   }
 }
 
+// ==== Debug ====
+const DEBUG = (localStorage.getItem("embed:debug") ?? "0") !== "0";
+const log  = (...a: any[]) => DEBUG && console.log("[kpi][embed]", ...a);
+const warn = (...a: any[]) => DEBUG && console.warn("[kpi][embed]", ...a);
+const err  = (...a: any[]) => DEBUG && console.error("[kpi][embed]", ...a);
+
 let heightInstalled = false;
 let ctxInstalled = false;
 
@@ -31,7 +37,6 @@ function notifyIfReady() {
   const c = currentCtx();
   if (c && c.orgId && c.apiBase) {
     const full = c as KpiCtx;
-    // vaciamos listeners (se notifica una vez)
     while (listeners.length) {
       try { listeners.shift()?.(full); } catch {}
     }
@@ -40,7 +45,6 @@ function notifyIfReady() {
 
 export function onCtx(fn: Cb) {
   const c = currentCtx();
-  // si ya está listo, llamo sincrónicamente y devuelvo noop
   if (c && c.orgId && c.apiBase) {
     fn(c as KpiCtx);
     return () => {};
@@ -74,7 +78,7 @@ export function waitForCtx(opts: { timeout?: number; needApiBase?: boolean } = {
     const unsub = onCtx((ctx) => {
       if (done) return;
       done = true;
-      unsub();               // ← ahora existe seguro
+      unsub();
       resolve(ctx);
     });
 
@@ -85,7 +89,6 @@ export function waitForCtx(opts: { timeout?: number; needApiBase?: boolean } = {
       reject(new Error("ctx timeout (no llegó EMBED_INIT)"));
     }, timeout);
 
-    // por las dudas, polling suave
     const tick = () => {
       if (done) return;
       if (tryResolve()) {
@@ -117,10 +120,46 @@ function mergeCtx(patch?: Partial<KpiCtx>) {
   notifyIfReady();
 }
 
+// ---- helpers handshake ----
+function setHostOrigin(origin: string) {
+  (window as any).__EMBED_HOST_ORIGIN__ = origin || "*";
+}
+function getHostOrigin() {
+  return (window as any).__EMBED_HOST_ORIGIN__ || "*";
+}
+function sendReady(tag = "ready") {
+  const host = getHostOrigin();
+  try {
+    parent.postMessage({ type: "EMBED_READY", tag }, host);
+    log("sent EMBED_READY →", host, { tag });
+  } catch (e) {
+    warn("EMBED_READY failed", e);
+  }
+}
+
 // ---- contexto (query + EMBED_INIT) ----
 export function setupEmbedCtx() {
   if (ctxInstalled) return;
   ctxInstalled = true;
+
+  // 0) instalamos listeners muy temprano
+  window.addEventListener("message", (e: MessageEvent) => {
+    const d: any = e.data;
+    if (!d || typeof d !== "object") return;
+
+    if (d.type === "EMBED_INIT") {
+      setHostOrigin(e.origin || "*");
+      log("EMBED_INIT from", e.origin, d.ctx);
+
+      if (d.ctx) {
+        const incoming: Partial<KpiCtx> = { ...d.ctx };
+        if (incoming.apiBase) incoming.apiBase = normalizeBase(incoming.apiBase);
+        mergeCtx(incoming);
+      }
+      // contestamos READY siempre que llega INIT
+      sendReady("on-init");
+    }
+  });
 
   // 1) Fallbacks por query (?org=, ?api=)
   try {
@@ -130,21 +169,28 @@ export function setupEmbedCtx() {
     const initial: Partial<KpiCtx> = {};
     if (Number.isFinite(org) && org > 0) initial.orgId = org;
     if (api) initial.apiBase = normalizeBase(api);
-    if (initial.orgId || initial.apiBase) mergeCtx(initial);
+    if (initial.orgId || initial.apiBase) {
+      log("merge ctx from query →", initial);
+      mergeCtx(initial);
+    }
   } catch {}
 
-  // 2) Handshake con el shell: EMBED_INIT { ctx }
-  window.addEventListener("message", (e: MessageEvent) => {
-    const d: any = e.data;
-    if (!d || d.type !== "EMBED_INIT") return;
-    (window as any).__EMBED_HOST_ORIGIN__ = e.origin || "*";
-    if (d.ctx) {
-      const incoming: Partial<KpiCtx> = { ...d.ctx };
-      if (incoming.apiBase) incoming.apiBase = normalizeBase(incoming.apiBase);
-      mergeCtx(incoming);
-      try { (e.source as WindowProxy)?.postMessage({ type: "EMBED_READY" }, e.origin || "*"); } catch {}
-    }
-  });
+  // 2) Avisar proactivamente que estoy listo (varias veces por si el host instaló tarde)
+  //    El host también re-pinguea, pero esto acelera.
+  setHostOrigin("*");
+
+  // microtask inmediato
+  queueMicrotask(() => sendReady("microtask"));
+  // por si el bundle es grande:
+  setTimeout(() => sendReady("t+0"), 0);
+  // tras DOM listo
+  if (document.readyState === "complete" || document.readyState === "interactive") {
+    sendReady("dom-ready");
+  } else {
+    window.addEventListener("DOMContentLoaded", () => sendReady("DOMContentLoaded"), { once: true });
+  }
+  // y después de load (suele mover altura)
+  window.addEventListener("load", () => sendReady("window-load"), { once: true });
 }
 
 // ---- auto altura ----
@@ -153,43 +199,54 @@ export function setupAutoHeight() {
   heightInstalled = true;
 
   const isEmbedded = (() => { try { return window.top !== window.self; } catch { return true; } })();
-  if (!isEmbedded) return;
+  if (!isEmbedded) {
+    log("skip autoHeight (not embedded)");
+    return;
+  }
 
   const measure = () => Math.max(
     document.documentElement.scrollHeight,
     document.body?.scrollHeight || 0,
     document.documentElement.offsetHeight,
-    document.body?.offsetHeight || 0
+    document.body?.offsetHeight || 0,
+    (document.scrollingElement as HTMLElement | null)?.scrollHeight || 0
   );
 
-  const send = () => {
+  const send = (src = "tick") => {
     const height = measure();
-    const host = (window as any).__EMBED_HOST_ORIGIN__ || "*";
+    const host = getHostOrigin();
     parent.postMessage({ type: "EMBED_HEIGHT", height }, host);
+    log("sent EMBED_HEIGHT", height, "from", src);
   };
 
   window.addEventListener("message", (e: MessageEvent) => {
     if (e.data?.type === "EMBED_INIT") {
-      (window as any).__EMBED_HOST_ORIGIN__ = e.origin || "*";
-      send();
+      setHostOrigin(e.origin || "*");
+      send("on-init");
     }
   });
 
-  const ro = new ResizeObserver(send);
+  const ro = new ResizeObserver(() => send("resize-observer"));
   ro.observe(document.documentElement);
 
-  const mo = new MutationObserver(send);
+  const mo = new MutationObserver(() => send("mutation-observer"));
   mo.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
 
-  window.addEventListener("load", send);
-  window.addEventListener("resize", send);
+  window.addEventListener("load", () => send("window-load"));
+  window.addEventListener("resize", () => send("window-resize"));
+  (document as any).fonts?.ready?.then?.(() => send("fonts-ready"));
 
-  const id = window.setInterval(send, 1000);
+  const id = window.setInterval(() => send("interval-1s"), 1000);
   window.addEventListener("beforeunload", () => clearInterval(id));
 }
 
 // ---- init ----
 export function initEmbed() {
-  setupEmbedCtx();
-  setupAutoHeight();
+  try {
+    setupEmbedCtx();
+    setupAutoHeight();
+    log("initEmbed done");
+  } catch (e) {
+    err("initEmbed failed", e);
+  }
 }

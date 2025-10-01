@@ -1,0 +1,7 @@
+packages:
+  - src/apps/kpi
+  - src/apps/infraestructura
+
+ignoredBuiltDependencies:
+  - '@tailwindcss/oxide'
+  - esbuild
