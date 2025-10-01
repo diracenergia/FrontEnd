@@ -117,13 +117,19 @@ function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
   return (
     <div className="min-h-screen grid place-items-center bg-slate-50 p-6">
       <form onSubmit={submit} className="w-full max-w-sm bg-white border border-slate-200 rounded-2xl p-6 shadow">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="h-9 w-9 rounded-lg bg-cyan-600" />
-          <div>
-            <div className="text-sm text-slate-500">INSTRUMENTACION</div>
-            <div className="font-semibold">DIRAC</div>
-          </div>
-        </div>
+       <div className="flex items-center gap-2 mb-4">
+  <img
+    src={`${import.meta.env.BASE_URL ?? "/"}img/logodirac.jpeg`}
+    alt="Logo DIRAC"
+    className="h-9 w-9 rounded-lg object-cover"
+    loading="lazy"
+  />
+  <div>
+    <div className="text-sm text-slate-500">INSTRUMENTACION</div>
+    <div className="font-semibold">DIRAC</div>
+  </div>
+</div>
+
 
         <div className="space-y-3">
           <label className="text-sm block">
