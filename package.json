@@ -7,25 +7,26 @@
 
   "scripts": {
     "// dev --------------------------------": "",
+    "predev": "node scripts/gen-manifest.mjs dev",
     "dev": "vite",
 
     "dev:kpi": "pnpm -C src/apps/kpi dev -- --host 127.0.0.1 --port 5174 --strictPort",
     "dev:infra": "pnpm -C src/apps/infraestructura dev -- --host 127.0.0.1 --port 5181 --strictPort",
-
     "dev:apps": "concurrently -k -n KPI,INFRA -c magenta,green \"pnpm dev:kpi\" \"pnpm dev:infra\"",
     "dev:all": "concurrently -k -n APPS,APP -c yellow,cyan \"pnpm dev:apps\" \"pnpm dev\"",
 
 
     "// build (prod) ------------------------": "",
-    "build": "vite build",
+    "prebuild": "node scripts/gen-manifest.mjs prod",
     "build:kpi": "pnpm -C src/apps/kpi build",
+    "copy:kpi": "shx echo \"[copy] kpi → public/kpi\" && shx rm -rf public/kpi && shx mkdir -p public/kpi && shx cp -r src/apps/kpi/dist/* public/kpi/",
     "build:infra": "pnpm -C src/apps/infraestructura build",
-    "build:all": "pnpm run build:infra && pnpm run build:kpi && pnpm run build",
-
-    "// (opcional) copiar bundles externos en /public --------": "",
-    "copy:kpi": "shx rm -rf public/kpi && shx mkdir -p public/kpi && shx cp -r src/apps/kpi/dist/* public/kpi/",
-    "copy:infra": "shx rm -rf public/infraestructura && shx mkdir -p public/infraestructura && shx cp -r src/apps/infraestructura/dist/* public/infraestructura/",
+    "copy:infra": "shx echo \"[copy] infra → public/infraestructura\" && shx rm -rf public/infraestructura && shx mkdir -p public/infraestructura && shx cp -r src/apps/infraestructura/dist/* public/infraestructura/",
     "build:external": "pnpm run build:infra && pnpm run copy:infra && pnpm run build:kpi && pnpm run copy:kpi",
+    "build": "pnpm run build:external && vite build",
+
+
+    "// (opcional) watch de copias en dev ---": "",
     "copy:kpi:watch": "chokidar \"src/apps/kpi/dist/**/*\" -c \"pnpm run copy:kpi\"",
 
 

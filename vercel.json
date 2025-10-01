@@ -1,0 +1,11 @@
+{
+  "rewrites": [
+    { "source": "/kpi", "destination": "/kpi/index.html" },
+    { "source": "/kpi/(.*)", "destination": "/kpi/index.html" },
+
+    { "source": "/infraestructura", "destination": "/infraestructura/index.html" },
+    { "source": "/infraestructura/(.*)", "destination": "/infraestructura/index.html" },
+
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
