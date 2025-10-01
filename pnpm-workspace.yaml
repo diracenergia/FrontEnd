@@ -1,4 +1,4 @@
 packages:
-  - .              # el host (raíz)
-  - "kpi"          # mini-app kpi
-  - "infraestructura"  # mini-app infraestructura
+  - .
+  - "src/apps/kpi"
+  - "src/apps/infraestructura"
