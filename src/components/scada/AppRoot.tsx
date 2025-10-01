@@ -120,8 +120,8 @@ function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
         <div className="flex items-center gap-2 mb-4">
           <div className="h-9 w-9 rounded-lg bg-cyan-600" />
           <div>
-            <div className="text-sm text-slate-500">SCADA</div>
-            <div className="font-semibold">Planta RDL</div>
+            <div className="text-sm text-slate-500">INSTRUMENTACION</div>
+            <div className="font-semibold">DIRAC</div>
           </div>
         </div>
 
