@@ -2,7 +2,7 @@
   {
     "name": "kpi",
     "type": "iframe",
-    "url": "/kpi/",
+    "url": "http://127.0.0.1:5174/",
     "mount": "#kpi-root",
     "route": "/operaciones",
     "allow": "clipboard-read; clipboard-write; fullscreen",
@@ -11,7 +11,7 @@
   {
     "name": "infra",
     "type": "iframe",
-    "url": "/infraestructura/",
+    "url": "http://127.0.0.1:5181/",
     "mount": "#infra-root",
     "route": "/operaciones",
     "allow": "clipboard-read; clipboard-write; fullscreen",
