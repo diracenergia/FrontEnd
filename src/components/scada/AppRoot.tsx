@@ -165,9 +165,7 @@ function LoginScreen({ onLogin }: { onLogin: (u: User) => void }) {
           </button>
 
           {/* Debug rápido: borralo si no lo querés ver */}
-          <pre className="text-xs text-slate-400">
-            {JSON.stringify({ username, password, org_id: orgId }, null, 2)}
-          </pre>
+          
         </div>
       </form>
     </div>
