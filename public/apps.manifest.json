@@ -1,4 +1,20 @@
 [
-  { "name": "kpi",   "type": "iframe", "url": "http://127.0.0.1:5174/", "mount": "#kpi-root",   "route": "/operaciones" },
-  { "name": "infra", "type": "iframe", "url": "http://127.0.0.1:5181/", "mount": "#infra-root", "route": "/operaciones" }
+  {
+    "name": "kpi",
+    "type": "iframe",
+    "url": "/kpi/",
+    "mount": "#kpi-root",
+    "route": "/operaciones",
+    "allow": "clipboard-read; clipboard-write; fullscreen",
+    "sandbox": "allow-scripts allow-forms allow-same-origin"
+  },
+  {
+    "name": "infra",
+    "type": "iframe",
+    "url": "/infraestructura/",
+    "mount": "#infra-root",
+    "route": "/operaciones",
+    "allow": "clipboard-read; clipboard-write; fullscreen",
+    "sandbox": "allow-scripts allow-forms allow-same-origin"
+  }
 ]
