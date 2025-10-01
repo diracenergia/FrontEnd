@@ -1,54 +1,49 @@
-// infraestructura/vite.config.ts
-import { defineConfig } from 'vite'
+// vite.config.ts
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath, URL } from 'node:url'
 
-const isProd = process.env.NODE_ENV === 'production'
+// https://vitejs.dev/config/
+export default defineConfig(({ mode }) => {
+  // Carga variables del .env (opcional)
+  const env = loadEnv(mode, process.cwd(), '')
+  const isProd = mode === 'production'
 
-export default defineConfig({
-  // En desarrollo sirve en raíz ("/"), en producción bajo subpath "/FrontEnd/infraestructura/"
-  base: isProd ? '/FrontEnd/infraestructura/' : '/',
+  return {
+    // En dev: '/', en prod: tu subcarpeta de deploy
+    // Cambiá este string si tu app se sirve en otra ruta
+    base: isProd ? '/FrontEnd/infraestructura/' : '/',
 
-  plugins: [react()],
+    plugins: [react()],
 
-  resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
-    },
-  },
-
-  server: {
-    port: 5174,
-    strictPort: true,
-    open: false,
-    // Proxy para evitar CORS en dev
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8000', // FastAPI dev
-        changeOrigin: true,
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
       },
     },
-  },
 
-  preview: {
-    port: 5175,
-    strictPort: true,
-  },
-
-  build: {
-    outDir: 'dist',
-    assetsDir: 'assets',
-    sourcemap: true,
-    chunkSizeWarningLimit: 600,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          react: ['react', 'react-dom'],
-          recharts: ['recharts'],
-        },
-      },
+    server: {
+      port: Number(env.VITE_PORT) || 5173,
+      host: true,
+      open: true,
     },
-  },
 
-  envPrefix: 'VITE_',
+    preview: {
+      port: Number(env.VITE_PREVIEW_PORT) || 4173,
+      host: true,
+    },
+
+    build: {
+      outDir: 'dist',
+      target: 'esnext',
+      sourcemap: !isProd,
+      // vacía outDir antes de compilar (por defecto true en Vite 5)
+      // emptyOutDir: true,
+    },
+
+    // Ejemplo: inyectar constantes de build (opcional)
+    define: {
+      __APP_VERSION__: JSON.stringify(env.VITE_APP_VERSION || 'dev'),
+    },
+  }
 })

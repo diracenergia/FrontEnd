@@ -12,8 +12,7 @@ import { computeAutoLayout } from "@/layout/auto";
 import { setNodeResolver } from "@/utils/paths";
 
 import type { NodeBase } from "@/types/graph";
-
-
+import { usePresenceSimple } from "@/hooks/usePresenceSimple";
 
 /* ========= Bootstrap de configuración para iframes ========= */
 
@@ -88,15 +87,40 @@ function ensureInfraBase(httpBase: string) {
   const base = trimSlash(httpBase);
   return base.endsWith("/infra") ? base : `${base}/infra`;
 }
+
+
+
+// Asegurate de tener arriba del archivo:
+// /// <reference types="vite/client" />
+
 function getHttpDefault(): string {
-  const origin = typeof window !== "undefined" ? trimSlash(window.location.origin) : "";
-  const isViteDev = /^http:\/\/(localhost|127\.0\.0\.1):517\d$/i.test(origin);
-  if (isViteDev) {
-    console.warn("[EMBED][WARN] Origin dev Vite:", origin, "→ usando backend http://127.0.0.1:8000");
-    return "http://127.0.0.1:8000";
+  // 1) En dev, si activaste proxy → usar rutas relativas (pasan por Vite)
+  if (import.meta.env?.DEV && import.meta.env.VITE_USE_PROXY === 'true') {
+    console.warn('[CFG] DEV+proxy: base="" (rutas relativas, Vite las proxyea)');
+    return '';
   }
-  return origin || "http://127.0.0.1:8000";
+
+  // 2) Si hay VITE_API_URL en .env → usarla
+  const envBase = import.meta.env?.VITE_API_URL as string | undefined;
+  if (envBase) {
+    const b = envBase.replace(/\/+$/, '').replace(/\/infra$/i, '');
+    console.warn('[CFG] Usando VITE_API_URL =', b);
+    return b;
+  }
+
+  // 3) Mismo origen (sin barra final)
+  const origin = typeof window !== 'undefined' ? (window.location.origin || '') : '';
+  if (origin) return origin.replace(/\/+$/, '');
+
+  // 4) Último fallback
+  return 'http://127.0.0.1:8000';
 }
+
+
+
+
+
+
 /** Base HTTP para /infra (ENV > LS > default coherente) */
 function getInfraBase(): string {
   const e = envAny();
@@ -171,7 +195,7 @@ async function saveNodePosToBackend(id: string, x: number, y: number) {
 }
 
 /* ============================
-   API root (para /tanks/status)
+   API root (para /conn/simple)
    ============================ */
 function getApiRoot(): string {
   // Igual a getHttpDefault() pero SIN ensureInfraBase
@@ -183,20 +207,36 @@ function getApiRoot(): string {
 }
 
 /* ============================
-   Types para /infra/graph
+   Types para /infra/graph (lado App)
    ============================ */
 type ApiNode = {
   id?: string;
   type: 'tank' | 'pump' | 'valve' | 'manifold';
   name: string;
-  level?: number | null;
-  capacity?: number | null;
-  status?: boolean | 'on'|'standby'|'fault'|'unknown'|null;
-  kW?: number | null;
-  state?: 'open'|'closed'|'throttle'|null;
+
+  // Posición
   x?: number; y?: number;
+
+  // Identificadores
   code?: string | null;
   asset_id?: number;
+
+  // Tanks
+  level?: number | null;
+  capacity?: number | null;
+  low_pct?: number | null;
+  low_low_pct?: number | null;
+  high_pct?: number | null;
+  high_high_pct?: number | null;
+  tank_status?: 'ok'|'warn'|'crit'|'warning'|'critical'|'disconnected' | null;
+  tank_color_hex?: string | null;
+
+  // Pumps
+  status?: boolean | 'on'|'standby'|'fault'|'unknown' | null;
+  kW?: number | null;
+
+  // Valves
+  state?: 'open'|'closed'|'throttle' | null;
 };
 type ApiGraph = { nodes: ApiNode[]; edges: string[] };
 type AB = { a: string; b: string };
@@ -210,7 +250,11 @@ const preventMiddleAux: React.MouseEventHandler<any> = (e) => {
 
 type ViewBox = { x: number; y: number; w: number; h: number };
 
-function nodesBBox(nodes: NodeBase[]) {
+function nodesBBox(nodes: NodeBase[], pad = 120) {
+  if (!nodes || nodes.length === 0) {
+    const minX = -400, minY = -300, w = 1600, h = 900;
+    return { minX, minY, maxX: minX + w, maxY: minY + h, w, h };
+  }
   let minX = +Infinity, minY = +Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const n of nodes) {
     const { halfW, halfH } = nodeHalfSize(n.type);
@@ -219,25 +263,33 @@ function nodesBBox(nodes: NodeBase[]) {
     maxX = Math.max(maxX, n.x + halfW);
     maxY = Math.max(maxY, n.y + halfH);
   }
-  const pad = 120;
   minX -= pad; minY -= pad; maxX += pad; maxY += pad;
-  return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+  const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+  return { minX, minY, maxX, maxY, w, h };
 }
+
 
 export default function App() {
   const [edit, setEdit] = useState(false);
   const [tick, setTick] = useState(0);
 
-  // Estado: nodos y edges (ya no usamos NODES/byId globales)
+  // Estado: nodos y edges
   const [nodes, setNodes] = useState<NodeBase[]>([]);
   const byId = useMemo(() => Object.fromEntries(nodes.map(n => [n.id, n])) as Record<string, NodeBase>, [nodes]);
-const [edges, setEdges] = useState<AB[]>([]);
+  const [edges, setEdges] = useState<AB[]>([]);
+
+  // Presencia simple desde /conn/simple (poll cada 10s)
+  const API_ROOT =
+    (typeof getApiRoot === "function" ? getApiRoot() : undefined) ||
+    (import.meta as any)?.env?.VITE_API_URL ||
+    localStorage.getItem("apiBase") ||
+    "";
+  const { get: getPresence, tick: presenceTick } = usePresenceSimple(API_ROOT, 10000);
 
   // Registrar resolver global para orthogonalPath(a,b)
-useEffect(() => {
- setNodeResolver((id) => byId[id]);
-}, [byId]);
-
+  useEffect(() => {
+    setNodeResolver((id) => byId[id]);
+  }, [byId]);
 
   // escucha cambios de config (cuando el host manda EMBED_CONFIG)
   const [configTick, setConfigTick] = useState(0);
@@ -349,86 +401,176 @@ useEffect(() => {
       try {
         const API_INFRA = getInfraBase();
         const data = await fetchJSON<ApiGraph>(`${API_INFRA}/graph`);
+
         // mapear nodos API -> NodeBase (id estable del backend)
         let mapped: NodeBase[] = (data.nodes || []).map((n) => {
-          const id = n.id || (n.code ? `${n.type}:${n.code}` : `${n.type}_${n.asset_id ?? ''}`);
+          const id =
+            n.id ||
+            (n.code ? `${n.type}:${n.code}` : `${n.type}_${n.asset_id ?? ""}`);
+
           const base: NodeBase = {
             id,
             type: n.type,
             name: n.name,
             x: Number.isFinite(n.x) ? (n.x as number) : 0,
             y: Number.isFinite(n.y) ? (n.y as number) : 0,
-            // asset_id para cruzar con /tanks/status
-            asset_id: typeof n.asset_id === 'number' ? n.asset_id : undefined,
+            asset_id: typeof n.asset_id === "number" ? n.asset_id : undefined,
+            ...(n as any).code ? { code: (n as any).code as string } : {},
           };
-          if (n.type === 'tank')  {
-  const lvlRaw = (n.level as any);
-  const lvl = typeof lvlRaw === 'number'
-    ? (lvlRaw > 1 ? Math.max(0, Math.min(100, lvlRaw)) / 100
-                  : Math.max(0, Math.min(1, lvlRaw)))
-    : undefined;
-  base.level = lvl;
-  base.capacity = n.capacity ?? undefined;
-}
 
-          if (n.type === 'pump')  {
-  const stRaw = (n.status as any);
-  const st =
-    typeof stRaw === 'boolean' ? (stRaw ? 'on' : 'standby') // true → on, false → standby (apagada)
-    : (stRaw ?? 'unknown');                                // si ya viene en string, lo respetamos
-  base.status = st as any;
-  base.kW = n.kW ?? undefined;
-}
+          if (n.type === "tank") {
+            // normalizar level (acepta 0..1 o 0..100)
+            const lvlRaw = (n.level as any);
+            const lvl =
+              typeof lvlRaw === "number"
+                ? (lvlRaw > 1
+                    ? Math.max(0, Math.min(100, lvlRaw)) / 100
+                    : Math.max(0, Math.min(1, lvlRaw)))
+                : undefined;
 
-          if (n.type === 'valve') { base.state  = (n.state  as any) ?? 'open'; }
+            base.level = lvl;
+            base.capacity = n.capacity ?? undefined;
+
+            // Umbrales (para pintar WARN/CRIT en nodes.tsx)
+            (base as any).low_pct       = (n as any).low_pct ?? undefined;
+            (base as any).low_low_pct   = (n as any).low_low_pct ?? undefined;
+            (base as any).high_pct      = (n as any).high_pct ?? undefined;
+            (base as any).high_high_pct = (n as any).high_high_pct ?? undefined;
+
+            // (opcional) color/estado provisto por backend
+            (base as any).tank_color_hex = (n as any).tank_color_hex ?? undefined;
+            (base as any).tank_status    = (n as any).tank_status ?? undefined;
+          }
+
+          if (n.type === "pump") {
+            const stRaw = (n.status as any);
+            const st =
+              typeof stRaw === "boolean"
+                ? stRaw ? "on" : "standby"
+                : (stRaw ?? "unknown");
+            base.status = st as any;
+            base.kW = n.kW ?? undefined;
+          }
+
+          if (n.type === "valve") {
+            base.state = (n.state as any) ?? "open";
+          }
+
           return base;
         });
 
         // autolayout si no vinieron posiciones
-        const needLayout = mapped.some(m => !Number.isFinite(m.x) || !Number.isFinite(m.y));
+        const needLayout = mapped.some(
+          (m) => !Number.isFinite(m.x) || !Number.isFinite(m.y)
+        );
         if (needLayout) mapped = computeAutoLayout(mapped);
 
         setNodes(mapped);
 
         // edges "SRC>DST" -> {a,b}
         const parsed: AB[] = (data.edges || []).map((s) => {
-          const [aRaw, bRaw] = String(s).split('>');
+          const [aRaw, bRaw] = String(s).split(">");
           return { a: aRaw, b: bRaw };
         });
         setEdges(parsed);
 
         // fit al contenido
-        // se hace en effect de resize/wheel o directo:
         setTimeout(() => fitToContent(), 0);
 
-        console.info('[EMBED] Graph cargado:', { nodes: mapped.length, edges: parsed.length });
+        console.info("[EMBED] Graph cargado:", {
+          nodes: mapped.length,
+          edges: parsed.length,
+        });
       } catch (e) {
-        console.warn('[EMBED] No se pudo cargar /infra/graph:', e);
-        setNodes([]); setEdges([]);
+        console.warn("[EMBED] No se pudo cargar /infra/graph:", e);
+        setNodes([]);
+        setEdges([]);
       }
     })();
   }, [configTick]);
 
   // --------------------------
-  // Merge de /tanks/status → color_hex en tanques
+  // Merge de /tanks/status → (ya no necesario: usamos umbrales del graph)
   // --------------------------
- const nodesWithStatus = nodes;
+  const nodesWithStatus = nodes;
 
-  // --- Helpers de estado hidráulico (SIN gravedad) ---
-function isOpenValve(n: NodeBase) {
-  return n.type !== 'valve' || n.state !== 'closed'; // válvula cerrada corta
-}
-function isPumpOn(n: NodeBase) {
-  return n.type === 'pump' && n.status === 'on';
-}
-/** Regla: fluye solo si
- *  - no hay válvulas cerradas en ninguno de los extremos, y
- *  - hay al menos una bomba ON en A o en B
- */
-function isEdgeActive(A: NodeBase, B: NodeBase): boolean {
-  if (!isOpenValve(A) || !isOpenValve(B)) return false;
-  return isPumpOn(A) || isPumpOn(B);
-}
+  // ============ PRESENCIA: mezclar tono ok/warn/bad antes de renderizar ============
+  const nodesWithPresence = useMemo(() => {
+    const base = (typeof nodesWithStatus !== "undefined" && nodesWithStatus) ? nodesWithStatus : nodes;
+    return base.map((n) => {
+      const p = getPresence?.(n.id);           // n.id debe coincidir con node_id de /conn/simple
+      return p ? { ...n, conn_tone: p.tone }   // agrega conn_tone al nodo
+               : n;
+    });
+  }, [nodes, (typeof nodesWithStatus !== "undefined" ? nodesWithStatus : null), getPresence, presenceTick]);
+
+// --- Helpers de estado hidráulico (flujo direccional) ---
+const isOnline = (n: NodeBase) => n.conn_tone === "ok"; // sin señal => no fluye
+const isOpenValve = (n: NodeBase) => n.type !== "valve" || n.state !== "closed";
+const isPumpAvailable = (n: NodeBase) => n.type === "pump" && n.status === "on" && isOnline(n);
+
+// Precomputo: aristas activas por alcanzabilidad desde bombas disponibles.
+// - Activa Tank->Pump si la bomba destino está disponible.
+// - Desde cada bomba disponible, BFS hacia adelante por Pump->Manifold,
+//   Manifold->Manifold, Manifold->Valve y Valve->Tank, cortando en válvula cerrada.
+// - Desde cada bomba disponible, BFS hacia adelante por Pump->Manifold,
+//   Manifold->Manifold, Manifold->Valve y Valve->Tank, cortando en válvula cerrada.
+const activeEdgeKeys = React.useMemo(() => {
+  const key = (a: string, b: string) => `${a}>${b}`;
+  const active = new Set<string>();
+  if (!edges.length || !nodesWithPresence.length) return active;
+
+  // byId (incluye conn_tone gracias a nodesWithPresence)
+  const byId: Record<string, NodeBase> =
+    Object.fromEntries(nodesWithPresence.map(nn => [nn.id, nn]));
+
+  // 1) Tank -> Pump depende del estado de la bomba destino
+  for (const { a, b } of edges) {
+    const A = byId[a], B = byId[b];
+    if (!A || !B) continue;
+    if (!isOpenValve(A) || !isOpenValve(B)) continue;
+    if (A.type === "tank" && B.type === "pump" && isPumpAvailable(B)) {
+      active.add(key(a, b));
+    }
+  }
+
+  // 2) BFS desde bombas disponibles
+  const out = new Map<string, string[]>();
+  for (const { a, b } of edges) {
+    (out.get(a) || out.set(a, []).get(a)).push(b);
+  }
+
+  const queue: string[] = nodesWithPresence.filter(isPumpAvailable).map(n => n.id);
+  const seen = new Set(queue);
+
+  while (queue.length) {
+    const u = queue.shift()!;
+    const nexts = out.get(u) || [];
+    for (const v of nexts) {
+      const A = byId[u], B = byId[v];
+      if (!A || !B) continue;
+      if (!isOpenValve(A) || !isOpenValve(B)) continue;
+
+      const allowed =
+        (A.type === "pump"     && B.type === "manifold") ||
+        (A.type === "manifold" && B.type === "manifold") ||
+        (A.type === "manifold" && B.type === "valve")    ||
+        (A.type === "valve"    && B.type === "tank");
+
+      if (!allowed) continue;
+
+      // Marcamos el edge como activo
+      active.add(key(u, v));
+
+      // Propagamos salvo que la válvula esté cerrada
+      const valveClosed = B.type === "valve" && B.state === "closed";
+      if (!valveClosed && !seen.has(v)) { seen.add(v); queue.push(v); }
+    }
+  }
+
+  return active;
+}, [edges, nodesWithPresence]);
+
 
 
   // --------------------------
@@ -569,45 +711,116 @@ function isEdgeActive(A: NodeBase, B: NodeBase): boolean {
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [groupsError, setGroupsError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const API_INFRA = getInfraBase();
-    setGroupsLoading(true);
-    (async () => {
-      try {
-        const locs = await fetchJSON<InfraLocation[]>(`${API_INFRA}/locations`);
-        // índice code -> id (si el backend usa code para assets)
-        const codeIndex = new Map<string, string>();
-        for (const n of nodes) {
-          // si tu backend manda code, podrías guardar n.code al mapear
-          const maybeCode = (n.id.includes(':') ? n.id.split(':')[1] : undefined);
-          if (maybeCode) codeIndex.set(maybeCode, n.id);
+ useEffect(() => {
+  const API = getInfraBase();
+  setGroupsLoading(true);
+  let cancelled = false;
+
+  // normalizador para nombres/códigos
+  const norm = (s:any) => (s==null?'':String(s))
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // saca acentos
+    .toUpperCase().trim();
+
+  (async () => {
+    try {
+      // ============================================
+      // 1) ÍNDICES DE NODOS (REEMPLAZA TU BLOQUE AQUÍ)
+      // ids del grafo vienen como "type_assetId" (p.ej. tank_6)
+      // ============================================
+      const idByTypedUnd = new Map<string, string>();  // "type_assetId" → node.id
+      const idByTypedCol = new Map<string, string>();  // "type:assetId"  → node.id (por si aparece a futuro)
+      const idByCode     = new Map<string, string>();  // CODE → node.id (si algún nodo trae code)
+
+      for (const n of nodes) {
+        const nid  = String((n as any).id ?? '');
+        let type   = String((n as any).type ?? '').toLowerCase();
+        let code   = (n as any).code as (string | undefined);
+        let assetId: number | null =
+          Number.isFinite((n as any).asset_id) ? Number((n as any).asset_id) :
+          Number.isFinite((n as any).assetId)  ? Number((n as any).assetId)  : null;
+
+        // parsear el id: "type_assetId" o "type:code"
+        const mUnd = nid.match(/^([^:_]+)_(\d+)$/);
+        const mCol = nid.match(/^([^:_]+):(.+)$/);
+
+        if (mUnd) {
+          if (!type) type = mUnd[1].toLowerCase();
+          if (assetId == null) assetId = Number(mUnd[2]);
+        } else if (mCol) {
+          if (!type) type = mCol[1].toLowerCase();
+          if (!code) code = mCol[2];
         }
 
-        const groups: Array<{ label: string; ids: string[] }> = [];
-        for (const loc of locs) {
-          const assets = await fetchJSON<InfraAssetGroup[]>(`${API_INFRA}/locations/${loc.id}/assets`);
-          const ids = Array.from(
-            new Set(
-              assets
-                .flatMap((g) => g.items.map((a) => a.code || ""))
-                .map((code) => codeIndex.get(code) || "")
-                .filter((id) => !!id && byId[id])
-            )
-          );
-          if (ids.length) groups.push({ label: loc.name, ids });
+        if (type && assetId != null) {
+          idByTypedUnd.set(`${type}_${assetId}`, nid);
+          idByTypedCol.set(`${type}:${assetId}`, nid);
+        }
+        if (code) idByCode.set(norm(code), nid);
+      }
+
+      // sinonimias por si backend trae otro nombre de tipo
+      const typeAlias: Record<string, string> = {
+        tanque: 'tank',
+        bomba: 'pump',
+        válvula: 'valve',
+        valvula: 'valve',
+        colectora: 'manifold',
+      };
+
+      const locs = await fetchJSON<InfraLocation[]>(`${API}/locations`);
+      const groups: Array<{ label: string; ids: string[] }> = [];
+
+      for (const loc of locs) {
+        const packs = await fetchJSON<InfraAssetGroup[]>(`${API}/locations/${loc.id}/assets`);
+        const ids = new Set<string>();
+
+        for (const g of packs) {
+          const t = (typeAlias[g.type?.toLowerCase?.()] ?? g.type ?? '').toLowerCase();
+
+          for (const a of (g.items ?? [])) {
+            const codeKey = norm(a.code ?? a.name ?? '');
+
+            // ============================================
+            // 2) MATCH DEL ASSET → nodeId (REEMPLAZA AQUÍ)
+            // probamos type_assetId, luego type:assetId, luego code/nombre
+            // ============================================
+            const nodeId =
+              idByTypedUnd.get(`${t}_${a.id}`) ||
+              idByTypedCol.get(`${t}:${a.id}`) ||
+              (codeKey && idByCode.get(codeKey)) ||
+              null;
+
+            if (nodeId && byId[nodeId]) {
+              ids.add(nodeId);
+            } else {
+              console.warn('SIN MATCH', { want: [`${t}_${a.id}`, `${t}:${a.id}`, codeKey], item: a, type: t });
+            }
+          }
         }
 
+        if (ids.size > 0) groups.push({ label: loc.name, ids: Array.from(ids) });
+      }
+
+      if (!cancelled) {
         setLocGroups(groups);
         setGroupsError(null);
-      } catch (e: any) {
-        console.error("[EMBED] Error cargando agrupaciones:", e);
-        setGroupsError(String(e?.message || e));
-        setLocGroups([]);
-      } finally {
-        setGroupsLoading(false);
       }
-    })();
-  }, [configTick, nodes, byId]);
+    } catch (err: any) {
+      if (!cancelled) {
+        console.error('[GROUP] error', err);
+        setGroupsError(String(err?.message || err));
+        setLocGroups([]);
+      }
+    } finally {
+      if (!cancelled) setGroupsLoading(false);
+    }
+  })();
+
+  return () => { cancelled = true; };
+}, [nodes, byId, configTick]);
+
+
+
 
   return (
     <div className="w-full bg-slate-50">
@@ -688,27 +901,27 @@ function isEdgeActive(A: NodeBase, B: NodeBase): boolean {
               )}
 
               {/* Edges debajo */}
-             {edges.map((e) => {
-  const A = byId[e.a]; const B = byId[e.b];
-  if (!A || !B) return null;
-  if (![A.x, A.y, B.x, B.y].every((v) => Number.isFinite(v))) return null;
+              {edges.map((e) => {
+                const A = byId[e.a]; const B = byId[e.b];
+                if (!A || !B) return null;
+                if (![A.x, A.y, B.x, B.y].every((v) => Number.isFinite(v))) return null;
 
-  const active = isEdgeActive(A, B); // 👈 usa los helpers nuevos
+                // ⛔️ Nunca dibujar edges inválidos Pump -> Tank (aunque vinieran del backend)
+                if (A.type === "pump" && B.type === "tank") return null;
 
-  return (
-    <Edge
-      key={`${e.a}-${e.b}-${tick}`}
-      {...e}
-      active={active}
-      // opcional: si tu Edge muestra etiqueta centrada solo con A/B, podés pasar:
-      // A={A} B={B}
-    />
-  );
-})}
+                const active = activeEdgeKeys.has(`${e.a}>${e.b}`);
 
+                return (
+                  <Edge
+                    key={`${e.a}-${e.b}-${tick}`}
+                    {...e}
+                    active={active}
+                  />
+                );
+              })}
 
-              {/* Nodes + overlay draggable (pintados con color de /tanks/status si aplica) */}
-              {nodesWithStatus.map((n) => {
+              {/* Nodes + overlay draggable (con presencia) */}
+              {nodesWithPresence.map((n) => {
                 const elem =
                   n.type === "tank" ? (
                     <Tank key={n.id} n={n} />

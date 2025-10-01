@@ -2,57 +2,181 @@
 import React from "react";
 import type { User } from "./types";
 import { Drawer, NavItem, KpiPill, Badge } from "./ui";
-import { OverviewGrid, AlarmsPage, TrendsPage, SettingsPage, AuditPage } from "./pages";
-import { hasPerm } from "./rbac";
-import { labelOfTab, sevMeta, severityOf } from "./utils";
+import { OverviewGrid } from "./pages";
+import { sevMeta, severityOf } from "./utils";
 import { usePlant } from "./hooks/usePlant";
-import { useAudit } from "./hooks/useAudit";
 import { TankFaceplate } from "./faceplates/TankFaceplate";
 import { PumpFaceplate } from "./faceplates/PumpFaceplate";
 
 // 🔌 WS (telemetría en tiempo real)
 import { connectTelemetryWS, onWS } from "../../lib/ws";
-// 🔔 REST para alarmas (fallback si no llegan por WS)
-import { api } from "../../lib/api";
+// 🔌 REST (infraestructura para mapping de localidades -> activos)
+import { infra2 } from "../../lib/api";
+// 🔌 Loader de micro-apps (iframe / module)
+import { loadApps } from "../../loader";
 
 const DEFAULT_THRESHOLDS = { lowCritical: 10, lowWarning: 25, highWarning: 80, highCritical: 90 };
-
-// Umbrales de “online” por latencia del último heartbeat del dispositivo
 const ONLINE_WARN_SEC = Number((import.meta as any).env?.VITE_WS_WARN_SEC ?? 30);
 const ONLINE_CRIT_SEC = Number((import.meta as any).env?.VITE_WS_CRIT_SEC ?? 120);
 
-// Poll de alarmas (0 = deshabilitado)
-const ALARMS_POLL_MS = Number((import.meta as any).env?.VITE_ALARMS_POLL_MS ?? 5000);
+// === Tipos locales para mapeo de localidades (lo que espera OverviewGrid) ===
+type AssetLocLink = {
+  asset_type: "tank" | "pump";
+  asset_id: number;
+  location_id: number;
+  code?: string | null;
+  name?: string | null;
+};
+
+// Apps del manifest (para tabs dinámicas)
+type AppItem = {
+  name: string;
+  type: "iframe" | "module" | "webcomponent";
+  url: string;
+  mount: string; // ej. "#kpi-root"
+  tag?: string;
+};
+
+// Helpers generales
+const nowMs = () => Date.now();
+const pick = (m: any, k: string) => (m?.[k] !== undefined ? m[k] : m?.payload?.[k]);
+const toNum = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) ? x : null);
+
+// 🧩 decode JWT local (para extraer org_id)
+function decodeJwt(token: string): any {
+  try {
+    const base64 = token.split(".")[1];
+    const padded = base64.padEnd(base64.length + (4 - (base64.length % 4)) % 4, "=");
+    const json = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(json);
+  } catch {
+    return {};
+  }
+}
 
 export default function ScadaApp({ initialUser }: { initialUser?: User }) {
-  const [tab, setTab] = React.useState<"overview" | "alarms" | "trends" | "settings" | "audit">("overview");
-  const [drawer, setDrawer] = React.useState<{ type: "tank" | "pump" | null; id?: string | null }>({ type: null });
-  const [user] = React.useState<User>(initialUser || { id: "u1", name: "operador@rdls", role: "operador" });
+  // -------- Tabs / manifest de micro-apps ----------
+  const [activeTab, setActiveTab] = React.useState<"operaciones" | string>("operaciones");
+  const [apps, setApps] = React.useState<AppItem[]>([]);
 
-  // Podés bajar el polling a 0 si querés depender 100% del WS: VITE_POLL_MS=0
+  // Leer manifest una vez
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/apps.manifest.json", { cache: "no-store" });
+        const list: AppItem[] = await res.json();
+        if (!cancelled) setApps(list);
+      } catch (e) {
+        console.error("[shell] no pude leer el manifest", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // 👉 Montar micro-apps con CONTEXTO (orgId + apiBase + apiKey)
+  React.useEffect(() => {
+    if (!apps.length) return;
+
+    // Tomamos org_id del token guardado por el login
+    const token = localStorage.getItem("rdls_token") || "";
+    const payload = token ? decodeJwt(token) : {};
+    const orgFromToken = Number(payload?.org_id) || 0;
+
+    // fallback por query/env si hiciera falta
+    const urlOrg = Number(new URLSearchParams(location.search).get("org")) || 0;
+    const envOrg = Number((import.meta as any).env?.VITE_ORG_ID) || 0;
+
+    const orgId = orgFromToken || urlOrg || envOrg || 1;
+
+    // API base desde envs (o backend por defecto)
+    const apiBase =
+      (import.meta.env.VITE_API_URL as string) ||
+      (import.meta.env.VITE_API_BASE as string) ||
+      "https://backend-v85n.onrender.com";
+
+    const apiKey = (import.meta.env.VITE_API_KEY as string) || undefined;
+
+    const ctx = { orgId, apiBase, apiKey, authInQuery: false };
+
+    // (Opcional) habilitá logs del loader: localStorage.setItem("embed:debug","1")
+    console.log("[shell] loadApps ctx →", ctx);
+
+    const id = requestAnimationFrame(() => {
+      loadApps("/apps.manifest.json", { ctx }).catch((e) =>
+        console.error("[shell] loadApps error", e)
+      );
+    });
+    return () => cancelAnimationFrame(id);
+  }, [apps]);
+
+  // -------- Estado y lógica SCADA (Operaciones) ----------
+  // Drawer para faceplates
+  const [drawer, setDrawer] = React.useState<{ type: "tank" | "pump" | null; id?: string | number | null }>({ type: null });
+
+  // Usuario mínimo (queda igual)
+  const [user] = React.useState<User>(
+    initialUser || { id: "u1", name: "operador@rdls", role: "operador" }
+  );
+
+  // Datos principales
   const POLL_MS = Number((import.meta as any).env?.VITE_POLL_MS ?? 5000);
   const { plant, setPlant, loading, err, kpis } = usePlant(POLL_MS);
-  const { rows: auditRows } = useAudit(15000);
 
-  const logAction = (evt: any) => console.log("[AUDIT]", evt); // stub seguro
+  // Beats por dispositivo
+  const [beats, setBeats] = React.useState<Record<string, number>>({});
 
-  // ===== Per-device beats (WS) → online/offline por activo =====
-  const [beats, setBeats] = React.useState<Record<string, number>>({}); // device_id -> lastBeatMs
-
-  // Helpers para tolerar distintos shapes en los mensajes del backend
-  const get = (m: any, k: string) => (m?.[k] !== undefined ? m[k] : m?.payload?.[k]);
-  const nowMs = () => Date.now();
+  // Mapeo activos ↔ localidades
+  const [assetLocs, setAssetLocs] = React.useState<AssetLocLink[] | null>(null);
 
   React.useEffect(() => {
-    // 1) Conectar (idempotente)
+    let cancelled = false;
+    (async () => {
+      try {
+        const locs = await infra2.locations();
+        const groupsPerLoc = await Promise.all(
+          locs.map(async (loc: any) => ({ loc, groups: await infra2.locAssets(loc.id) }))
+        );
+
+        const all: AssetLocLink[] = [];
+        for (const { loc, groups } of groupsPerLoc) {
+          for (const g of groups) {
+            if (g.type !== "tank" && g.type !== "pump") continue;
+            for (const it of g.items) {
+              const idNum = toNum(it.id);
+              if (idNum == null) continue;
+              all.push({
+                asset_type: g.type as "tank" | "pump",
+                asset_id: idNum,
+                location_id: loc.id,
+                code: loc.code,
+                name: loc.name,
+              });
+            }
+          }
+        }
+        if (!cancelled) setAssetLocs(all);
+      } catch (e) {
+        console.error("[ScadaApp] assetLocs FAIL", e);
+        if (!cancelled) setAssetLocs([]); // evita null
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Evitar doble conexión WS en StrictMode
+  const wsStartedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (wsStartedRef.current) return;
+    wsStartedRef.current = true;
+
     connectTelemetryWS();
 
-    // 2) Suscripción a eventos
     const off = onWS((m: any) => {
       const type = m?.type;
 
-      // Si el mensaje tiene device_id, registramos beat SOLO de ese dispositivo
-      const devId = get(m, "device_id");
+      const devId = pick(m, "device_id");
       if (devId) {
         setBeats((prev) => ({ ...prev, [String(devId)]: nowMs() }));
       }
@@ -60,38 +184,35 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
       switch (type) {
         case "status":
         case "heartbeat":
-          // ya marcamos beat arriba si vino device_id
           break;
 
         case "tank_update": {
-          const tkId = get(m, "tank_id") ?? get(m, "id");
-          const latest = get(m, "latest") ?? m; // admite plano
-          if (typeof tkId !== "number" || !latest) return;
+          const tkId = pick(m, "tank_id") ?? pick(m, "id");
+          const tkNum = toNum(tkId);
+          const latest = pick(m, "latest") ?? m; // admite plano
+          if (tkNum == null || !latest) return;
 
-          // Marca beat por el activo (device lógico) aunque no venga device_id
-          const logicalDev = `rdls-esp32-tk${tkId}`;
+          const logicalDev = `rdls-esp32-tk${tkNum}`;
           setBeats((prev) => ({ ...prev, [logicalDev]: nowMs() }));
 
           setPlant((prev: any) => {
             const next = { ...prev, tanks: [...(prev.tanks || [])] };
-            const idx = next.tanks.findIndex((t: any) => (t.tankId ?? t.id) === tkId);
+            const idx = next.tanks.findIndex((t: any) => (t.tankId ?? t.id) === tkNum);
             if (idx >= 0) {
               const t = next.tanks[idx];
-              const levelPct =
-                typeof latest.level_percent === "number" ? latest.level_percent : t.levelPct;
-              const capacityL = typeof t.capacityL === "number" ? t.capacityL : null;
+              const levelPct = typeof latest.level_percent === "number" ? latest.level_percent : t.levelPct;
+              const capacityL = toNum(t.capacityL);
               const volumeL =
-                latest.volume_l != null
-                  ? latest.volume_l
-                  : capacityL != null && typeof levelPct === "number"
+                toNum(latest.volume_l) ??
+                (capacityL != null && typeof levelPct === "number"
                   ? Math.round((capacityL * levelPct) / 100)
-                  : t.volumeL;
+                  : toNum(t.volumeL));
 
               next.tanks[idx] = {
                 ...t,
                 latest,
                 levelPct,
-                volumeL,
+                volumeL: volumeL ?? t.volumeL,
                 temperatureC: latest?.temperature_c ?? t.temperatureC,
               };
             }
@@ -101,24 +222,20 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
         }
 
         case "pump_update": {
-          const puId = get(m, "pump_id") ?? get(m, "id");
-          const latest = get(m, "latest") ?? m;
-          if (typeof puId !== "number" || !latest) return;
+          const puId = pick(m, "pump_id") ?? pick(m, "id");
+          const puNum = toNum(puId);
+          const latest = pick(m, "latest") ?? m;
+          if (puNum == null || !latest) return;
 
-          // Marca beat por el activo (device lógico) aunque no venga device_id
-          const logicalDev = `rdls-esp32-pu${puId}`;
+          const logicalDev = `rdls-esp32-pu${puNum}`;
           setBeats((prev) => ({ ...prev, [logicalDev]: nowMs() }));
 
           setPlant((prev: any) => {
             const next = { ...prev, pumps: [...(prev.pumps || [])] };
-            const idx = next.pumps.findIndex((p: any) => (p.pumpId ?? p.id) === puId);
+            const idx = next.pumps.findIndex((p: any) => (p.pumpId ?? p.id) === puNum);
             if (idx >= 0) {
               const p = next.pumps[idx];
-              next.pumps[idx] = {
-                ...p,
-                latest,
-                state: latest?.is_on ? "run" : "stop",
-              };
+              next.pumps[idx] = { ...p, latest, state: latest?.is_on ? "run" : "stop" };
             }
             return next;
           });
@@ -127,7 +244,6 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
 
         case "alarms_snapshot":
         case "alarms_update": {
-          // Si el backend emite alarmas por WS, actualizamos en vivo
           const payload = m?.payload ?? m;
           if (Array.isArray(payload)) {
             setPlant((prev: any) => ({ ...prev, alarms: payload }));
@@ -148,48 +264,16 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
       }
     });
 
-    return () => off();
+    return () => { off(); };
   }, [setPlant]);
 
-  // 🔁 Poll de alarmas (fallback REST). Mantiene la tabla viva si WS no emite eventos de alarmas.
-  React.useEffect(() => {
-    let timer: number | null = null;
-    let closed = false;
-
-    const fetchOnce = async () => {
-      try {
-        const list = await api.listAlarms(true); // activas
-        if (!closed) {
-          setPlant((prev: any) => ({ ...prev, alarms: Array.isArray(list) ? list : [] }));
-        }
-      } catch (e) {
-        // Silencioso: si falla un tick no interrumpimos UI
-        // console.debug("[alarms poll]", e);
-      }
-    };
-
-    // primer carga
-    fetchOnce();
-
-    if (ALARMS_POLL_MS > 0) {
-      timer = window.setInterval(fetchOnce, ALARMS_POLL_MS) as unknown as number;
-    }
-    return () => {
-      closed = true;
-      if (timer != null) clearInterval(timer as any);
-    };
-  }, [setPlant]);
-
-  // Mapa por activo (TK-xx/PU-yy) con estado online/warn/offline según edad del último beat
+  // Resumen de online/offline por activo
   const statusByKey = React.useMemo(() => {
     const statusOf = (devId: string) => {
       const last = beats[devId];
       if (!last) return { online: false, ageSec: Infinity, tone: "bad" as const };
       const ageSec = Math.round((nowMs() - last) / 1000);
-      const tone =
-        ageSec < ONLINE_WARN_SEC ? ("ok" as const) :
-        ageSec < ONLINE_CRIT_SEC ? ("warn" as const) :
-        ("bad" as const);
+      const tone = ageSec < ONLINE_WARN_SEC ? ("ok" as const) : ageSec < ONLINE_CRIT_SEC ? ("warn" as const) : ("bad" as const);
       return { online: ageSec < ONLINE_CRIT_SEC, ageSec, tone };
     };
 
@@ -197,88 +281,55 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
 
     (plant.tanks || []).forEach((t: any) => {
       const numericId = t.tankId ?? t.id;
-      const dev = `rdls-esp32-tk${numericId}`;
-      out[`TK-${numericId}`] = statusOf(dev);
+      if (numericId == null) return;
+      out[`TK-${numericId}`] = statusOf(`rdls-esp32-tk${numericId}`);
     });
 
     (plant.pumps || []).forEach((p: any) => {
       const numericId = p.pumpId ?? p.id;
-      const dev = `rdls-esp32-pu${numericId}`;
-      out[`PU-${numericId}`] = statusOf(dev);
+      if (numericId == null) return;
+      out[`PU-${numericId}`] = statusOf(`rdls-esp32-pu${numericId}`);
     });
 
     return out;
   }, [plant, beats]);
 
-  const body =
-    tab === "overview" ? (
-      <OverviewGrid
-        plant={plant}
-        onOpenTank={(id: string) => setDrawer({ type: "tank", id })}
-        onOpenPump={(id: string) => setDrawer({ type: "pump", id })}
-        statusByKey={statusByKey}
-      />
-    ) : tab === "alarms" ? (
-      <AlarmsPage plant={plant} setPlant={setPlant} user={user} onAudit={(evt: any) => logAction(evt)} />
-    ) : tab === "trends" ? (
-      <TrendsPage />
-    ) : tab === "settings" ? (
-      <SettingsPage
-        plant={plant}
-        setPlant={(updater: any) => {
-          setPlant((prev: any) => {
-            const next = typeof updater === "function" ? updater(prev) : updater;
-            (prev.tanks || []).forEach((t: any, i: number) => {
-              const n = (next.tanks || [])[i];
-              if (!n) return;
-              if (JSON.stringify(t.thresholds) !== JSON.stringify(n.thresholds)) {
-                const permitted = hasPerm(user, "canEditSetpoints");
-                logAction({
-                  action: "EDIT_THRESHOLD",
-                  asset: t.id,
-                  details: JSON.stringify(n.thresholds),
-                  result: permitted ? "ok" : "denied",
-                });
-              }
-            });
-            return next;
-          });
-        }}
-        user={user}
-      />
-    ) : (
-      <AuditPage audit={auditRows} />
-    );
-
+  // ---------- UI ----------
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800">
       <div className="flex">
+        {/* Sidebar único (tabs: Operaciones + manifest) */}
         <aside className="hidden md:flex md:flex-col md:w-64 bg-white border-r border-slate-200 min-h-screen p-4 justify-between">
           <div>
             <div className="flex items-center gap-2 mb-6">
-  <img
-  src="/img/logodirac.jpeg"
-  alt="Logo DIRAC"
-  className="h-8 w-8 rounded-lg object-cover"
-/>
-  <div>
-    <div className="text-sm text-slate-500">INTRUMENTACION</div>
-    <div className="font-semibold">DIRAC</div>
-  </div>
-</div>
+              <img src="/img/logodirac.jpeg" alt="Logo DIRAC" className="h-8 w-8 rounded-lg object-cover" />
+              <div>
+                <div className="text-sm text-slate-500">INSTRUMENTACION</div>
+                <div className="font-semibold">DIRAC</div>
+              </div>
+            </div>
 
             <nav className="space-y-1">
-              <NavItem label="Overview" active={tab === "overview"} onClick={() => setTab("overview")} />
-              <NavItem label="Alarmas" active={tab === "alarms"} onClick={() => setTab("alarms")} />
-              <NavItem label="Tendencias" active={tab === "trends"} onClick={() => setTab("trends")} />
-              <NavItem label="Configuración" active={tab === "settings"} onClick={() => setTab("settings")} />
-              <NavItem label="Auditoría" active={tab === "audit"} onClick={() => setTab("audit")} />
+              <NavItem
+                label="Operaciones"
+                active={activeTab === "operaciones"}
+                onClick={() => setActiveTab("operaciones")}
+              />
+              {apps.map((a) => (
+                <NavItem
+                  key={a.name}
+                  label={a.name.toUpperCase()}
+                  active={activeTab === a.name}
+                  onClick={() => setActiveTab(a.name)}
+                />
+              ))}
             </nav>
           </div>
+
           <div className="text-xs text-slate-500">
             <div>Usuario: {user.name}</div>
             <div>Rol: {user.role}</div>
-            <div>Empresa: {user.company?.name ?? "—"}</div>
+            <div>Empresa: {(user as any).company?.name ?? (user as any).company ?? "—"}</div>
           </div>
         </aside>
 
@@ -286,16 +337,20 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
           <header className="sticky top-0 z-10 bg-white border-b border-slate-200">
             <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="text-lg font-semibold tracking-tight">{labelOfTab(tab)}</div>
-                {/* KPIs globales (dejamos como estaban) */}
-                <div className="hidden md:flex items-center gap-3 text-xs">
-                  <KpiPill label="Nivel promedio" value={loading && !plant.tanks.length ? "…" : `${kpis.avg}%`} tone="ok" />
-                  <KpiPill label="Críticos" value={loading && !plant.tanks.length ? "…" : `${kpis.crit}`} tone={kpis.crit ? "bad" : "ok"} />
-                  <KpiPill label="Alarmas activas" value={`${kpis.alarmsAct}`} tone={kpis.alarmsAct ? "warn" : "ok"} />
+                <div className="text-lg font-semibold tracking-tight">
+                  {activeTab === "operaciones" ? "Operaciones" : activeTab.toUpperCase()}
                 </div>
+                {activeTab === "operaciones" && (
+                  <div className="hidden md:flex items-center gap-3 text-xs">
+                    <KpiPill label="Nivel promedio" value={loading && !plant.tanks?.length ? "…" : `${kpis.avg}%`} tone="ok" />
+                    <KpiPill label="Críticos" value={loading && !plant.tanks?.length ? "…" : `${kpis.crit}`} tone={kpis.crit ? "bad" : "ok"} />
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2">
-                <span className="px-2 py-1 rounded-lg bg-slate-100 text-xs">{user.company?.name ?? "—"}</span>
+                <span className="px-2 py-1 rounded-lg bg-slate-100 text-xs">
+                  {(user as any).company?.name ?? (user as any).company ?? "—"}
+                </span>
                 <button
                   onClick={() => {
                     localStorage.removeItem("rdls_user");
@@ -310,23 +365,57 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
           </header>
 
           <div className="max-w-7xl mx-auto p-4 md:p-6">
-            {/* 👉 sin banners globales de telemetría */}
-            {loading && !plant.tanks.length ? (
-              <div className="p-4">Cargando…</div>
-            ) : err ? (
-              <div className="p-4 text-red-600">Error: {err}</div>
-            ) : (
-              body
-            )}
+            {/* Tab local */}
+            {activeTab === "operaciones"
+              ? loading && !plant.tanks?.length
+                ? <div className="p-4">Cargando…</div>
+                : err
+                ? <div className="p-4 text-red-600">Error: {String(err)}</div>
+                : (
+                  <OverviewGrid
+                    plant={plant}
+                    assetLocs={assetLocs ?? undefined}
+                    onOpenTank={(id) => setDrawer({ type: "tank", id })}
+                    onOpenPump={(id) => setDrawer({ type: "pump", id })}
+                    statusByKey={statusByKey}
+                    debug
+                  />
+                )
+              : null}
+
+            {/* Panes de micro-apps: el loader inyecta el iframe/módulo dentro.
+                Mostramos solo el activo. */}
+            {apps.map((a) => {
+              const id = a.mount.startsWith("#") ? a.mount.slice(1) : a.mount;
+              const visible = activeTab === a.name;
+              return (
+                <section
+                  key={a.name}
+                  id={id}
+                  className="pane"
+                  style={{
+                    display: visible ? "block" : "none",
+                    padding: 0,
+                    position: "relative",
+                    overflow: "visible",
+                    zIndex: 0,
+                  }}
+                />
+              );
+            })}
           </div>
         </main>
       </div>
 
-      {/* Drawer */}
+      {/* Drawer de faceplates */}
       {(() => {
         const isTank = drawer.type === "tank";
-        const t = isTank ? plant.tanks.find((x: any) => x.id === drawer.id) : null;
-        const p = drawer.type === "pump" ? plant.pumps.find((x: any) => x.id === drawer.id) : null;
+        const t = isTank
+          ? (plant.tanks || []).find((x: any) => String(x.id ?? x.tankId) === String(drawer.id))
+          : null;
+        const p = drawer.type === "pump"
+          ? (plant.pumps || []).find((x: any) => String(x.id ?? x.pumpId) === String(drawer.id))
+          : null;
 
         const sev = t ? severityOf(t.levelPct, t.thresholds ?? DEFAULT_THRESHOLDS) : null;
         const meta = sev ? sevMeta(sev) : null;
@@ -340,7 +429,11 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
           >
             {isTank && t && <TankFaceplate tank={t} headerless />}
             {drawer.type === "pump" && p && (
-              <PumpFaceplate pump={p} user={user} onAudit={(evt: any) => console.log("[AUDIT]", evt)} />
+              <PumpFaceplate
+                pump={p}
+                user={user}
+                onAudit={(evt: any) => console.log("[AUDIT]", evt)}
+              />
             )}
           </Drawer>
         );

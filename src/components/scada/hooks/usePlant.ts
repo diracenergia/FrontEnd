@@ -1,4 +1,4 @@
-import React from "react";
+import * as React from "react";
 import { api } from "../../../lib/api";
 
 type PlantState = {
@@ -12,19 +12,25 @@ const DEFAULT_THRESHOLDS = { lowCritical: 10, lowWarning: 25, highWarning: 80, h
 const STALE_WARN_SEC = Number(import.meta.env.VITE_STALE_WARN_SEC ?? 120);
 const STALE_CRIT_SEC = Number(import.meta.env.VITE_STALE_CRIT_SEC ?? 300);
 
+const toPct = (n: any) => (typeof n === "number" && isFinite(n) ? n : 0);
+const isNetErr = (e: any) =>
+  /Failed to fetch|NetworkError|TypeError: Network|Load failed|AbortError/i.test(
+    String(e?.message || e)
+  );
+
 function secSince(ts?: string | null) {
   if (!ts) return Number.POSITIVE_INFINITY;
   const t = new Date(ts).getTime();
   if (!isFinite(t)) return Number.POSITIVE_INFINITY;
   return Math.max(0, Math.round((Date.now() - t) / 1000));
 }
+
 function healthFromSec(s: number) {
   if (!isFinite(s)) return { tone: "bad" as const, label: "Sin datos" };
   if (s < STALE_WARN_SEC) return { tone: "ok" as const, label: "OK" };
   if (s < STALE_CRIT_SEC) return { tone: "warn" as const, label: "Lenta" };
   return { tone: "bad" as const, label: "Caída" };
 }
-const toPct = (n: any) => (typeof n === "number" && isFinite(n) ? n : 0);
 
 const mapConfigToThresholds = (t: any) => ({
   lowCritical: t.low_low_pct ?? DEFAULT_THRESHOLDS.lowCritical,
@@ -38,67 +44,68 @@ export function usePlant(refreshMs = 5000) {
   const [loading, setLoading] = React.useState(true);
   const [err, setErr] = React.useState<string | null>(null);
 
+  const booted = React.useRef(false);
   const lastSeen = React.useRef<Record<string, { ts?: string | null; reading_id?: number }>>({});
 
-  const load = React.useCallback(async () => {
-    // 1) Tanques
-    const tanksCfg = await api.listTanksWithConfig();
-    const tanks = await Promise.all(
-      tanksCfg.map(async (t: any) => {
-        try {
-          const latest = await api.tankLatest(t.id);
-          const levelPct = typeof latest?.level_percent === "number" ? latest.level_percent : null;
-          const capacityL = typeof t?.capacity_liters === "number" ? t.capacity_liters : null;
-          const volumeL =
-            typeof latest?.volume_l === "number"
-              ? latest.volume_l
-              : levelPct != null && capacityL != null
-              ? Math.round((capacityL * levelPct) / 100)
-              : null;
+  // --------- carga “real” (con tolerancia a 404 y errores de red por recurso) ----------
+  const load = React.useCallback(async (): Promise<PlantState> => {
+    // 1) Config de tanques / bombas / alarmas en paralelo
+    const [tanksCfgRaw, pumpsCfgRaw, alarmsRaw] = await Promise.all([
+      api.listTanksWithConfig().catch((e) => {
+        console.warn("[usePlant] listTanksWithConfig error:", e);
+        return [] as any[];
+      }),
+      api.listPumpsWithConfig().catch((e) => {
+        console.warn("[usePlant] listPumpsWithConfig error:", e);
+        return [] as any[];
+      }),
+      api.listAlarms(true).catch((e) => {
+        console.warn("[usePlant] listAlarms error:", e);
+        return [] as any[];
+      }),
+    ]);
 
-          return {
-            id: `TK-${t.id}`,
-            tankId: t.id,
-            name: t.name,
-            capacityL,
-            levelPct,
-            volumeL,
-            temperatureC: latest?.temperature_c ?? null,
-            thresholds: mapConfigToThresholds(t),
-            latest,
-            material: t.material ?? null,
-            fluid: t.fluid ?? null,
-            install_year: t.install_year ?? null,
-            location_text: t.location_text ?? null,
-          };
-        } catch {
-          const capacityL = typeof t?.capacity_liters === "number" ? t.capacity_liters : null;
-          return {
-            id: `TK-${t.id}`,
-            tankId: t.id,
-            name: t.name,
-            capacityL,
-            levelPct: null,
-            volumeL: null,
-            temperatureC: null,
-            thresholds: mapConfigToThresholds(t),
-            latest: null,
-            material: t.material ?? null,
-            fluid: t.fluid ?? null,
-            install_year: t.install_year ?? null,
-            location_text: t.location_text ?? null,
-          };
-        }
+    // 2) Tanques -> pedir latest de cada uno, tolerando 404/sin datos
+    const tanks = await Promise.all(
+      (tanksCfgRaw ?? []).map(async (t: any) => {
+        const latest = await api.tankLatest(t.id).catch(() => null);
+        const levelPct = typeof latest?.level_percent === "number" ? latest.level_percent : null;
+        const capacityL =
+          typeof t?.capacity_liters === "number" ? t.capacity_liters : null;
+        const volumeL =
+          typeof latest?.volume_l === "number"
+            ? latest.volume_l
+            : levelPct != null && capacityL != null
+            ? Math.round((capacityL * levelPct) / 100)
+            : null;
+
+        return {
+          id: `TK-${t.id}`,
+          tankId: t.id,
+          name: t.name,
+          capacityL,
+          levelPct,
+          volumeL,
+          temperatureC: latest?.temperature_c ?? null,
+          thresholds: mapConfigToThresholds(t),
+          latest,
+          material: t.material ?? null,
+          fluid: t.fluid ?? null,
+          install_year: t.install_year ?? null,
+          location_text: t.location_text ?? null,
+        };
       })
     );
 
-    // 2) Bombas
-    const pumpsCfg = await api.listPumpsWithConfig();
+    // 3) Bombas -> pedir latest de cada una, tolerando 404/sin datos
     const pumps = await Promise.all(
-      (pumpsCfg ?? []).map(async (p: any) => {
+      (pumpsCfgRaw ?? []).map(async (p: any) => {
         const latest = await api.pumpLatest(p.id).catch(() => null);
         const extra = (latest?.extra ?? {}) as any;
-        const selRaw = String(extra.selector_mode ?? extra.selector ?? extra.mode ?? "").toLowerCase();
+
+        const selRaw = String(
+          extra.selector_mode ?? extra.selector ?? extra.mode ?? ""
+        ).toLowerCase();
         const manualLockout =
           selRaw === "manual" ||
           selRaw === "man" ||
@@ -107,6 +114,7 @@ export function usePlant(refreshMs = 5000) {
           selRaw === "lock-out" ||
           extra.local === true ||
           extra.lockout === true;
+
         const uiMode: "auto" | "manual" = manualLockout ? "manual" : "auto";
 
         return {
@@ -124,7 +132,9 @@ export function usePlant(refreshMs = 5000) {
                   max: p.vfd_max_speed_pct ?? 100,
                   def:
                     p.vfd_default_speed_pct ??
-                    Math.round(((p.vfd_min_speed_pct ?? 0) + (p.vfd_max_speed_pct ?? 100)) / 2),
+                    Math.round(
+                      ((p.vfd_min_speed_pct ?? 0) + (p.vfd_max_speed_pct ?? 100)) / 2
+                    ),
                 }
               : null,
           latest,
@@ -137,53 +147,64 @@ export function usePlant(refreshMs = 5000) {
       })
     );
 
-    // 3) Alarmas
-    const alarms = await api.listAlarms(true);
-    return { tanks, pumps, alarms };
+    return { tanks, pumps, alarms: alarmsRaw ?? [] };
   }, []);
 
-  const reload = React.useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await load();
-      setPlant(data);
-      setErr(null);
-    } catch (e: any) {
-      setErr(e?.message || String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [load]);
+  // --------- reload con “soft/hard” ----------
+  const reload = React.useCallback(
+    async (soft = false) => {
+      try {
+        if (!soft && !booted.current) setLoading(true);
+        const data = await load();
+        setPlant(data);
+        setErr(null); // limpio error si esta pasada salió bien
+      } catch (e: any) {
+        const msg = String(e?.message || e);
+        console.warn("[usePlant] reload error:", msg);
 
+        if (!booted.current) {
+          // Primer load: sí mostramos un mensaje claro
+          setErr("No se pudo conectar con el backend.");
+        } else {
+          // Refrescos: si es error de red, no ensuciamos la UI (mantenemos último estado bueno)
+          if (!isNetErr(e)) setErr(msg);
+        }
+      } finally {
+        if (!soft && !booted.current) {
+          setLoading(false);
+          booted.current = true;
+        }
+      }
+    },
+    [load]
+  );
+
+  // --------- efecto inicial + refrescos periódicos ----------
   React.useEffect(() => {
     let alive = true;
+
     (async () => {
-      try {
-        setLoading(true);
-        const data = await load();
-        if (!alive) return;
-        setPlant(data);
-        setErr(null);
-      } catch (e: any) {
-        if (!alive) return;
-        setErr(e?.message || String(e));
-      } finally {
-        if (!alive) return;
-        setLoading(false);
-      }
+      await reload(false); // primer load con spinner
+      if (!alive) return;
+      booted.current = true;
     })();
 
-    const id = setInterval(() => alive && reload(), refreshMs);
+    const id = setInterval(() => {
+      if (alive) reload(true); // refrescos sin spinner ni mensajes de red
+    }, refreshMs);
+
     return () => {
       alive = false;
       clearInterval(id);
     };
-  }, [reload, refreshMs, load]);
+  }, [reload, refreshMs]);
 
-  // KPIs y salud de telemetría
+  // --------- KPIs / salud de telemetría ----------
   const kpis = React.useMemo(() => {
     const tanks = plant.tanks || [];
-    const withNum = tanks.filter((t: any) => typeof t.levelPct === "number" && isFinite(t.levelPct));
+    const withNum = tanks.filter(
+      (t: any) => typeof t.levelPct === "number" && isFinite(t.levelPct)
+    );
     const avg = withNum.length
       ? Math.round(withNum.reduce((a: number, t: any) => a + t.levelPct, 0) / withNum.length)
       : 0;
@@ -213,11 +234,15 @@ export function usePlant(refreshMs = 5000) {
 
     let moved = 0,
       total = 0;
+
     const perAsset = rawAssets.map((a) => {
       const ageSec = secSince(a.ts);
       const h = healthFromSec(ageSec);
       const prev = lastSeen.current[a.key];
-      const advanced = a.reading_id != null ? prev?.reading_id !== a.reading_id : a.ts != null && prev?.ts !== a.ts;
+      const advanced =
+        a.reading_id != null
+          ? prev?.reading_id !== a.reading_id
+          : a.ts != null && prev?.ts !== a.ts;
 
       if (a.ts) total++;
       if (advanced) moved++;
@@ -244,9 +269,14 @@ export function usePlant(refreshMs = 5000) {
     return { avg, crit, alarmsAct, telemetry, worstLag, newPct, perAsset, badAssets, warnAssets };
   }, [plant]);
 
-  // sets derivados
-  const badKeys = React.useMemo(() => new Set((kpis.badAssets ?? []).map((a) => a.key)), [kpis.badAssets]);
-  const warnKeys = React.useMemo(() => new Set((kpis.warnAssets ?? []).map((a) => a.key)), [kpis.warnAssets]);
+  const badKeys = React.useMemo(
+    () => new Set((kpis.badAssets ?? []).map((a) => a.key)),
+    [kpis.badAssets]
+  );
+  const warnKeys = React.useMemo(
+    () => new Set((kpis.warnAssets ?? []).map((a) => a.key)),
+    [kpis.warnAssets]
+  );
 
   return { plant, setPlant, loading, err, kpis, badKeys, warnKeys, reload };
 }

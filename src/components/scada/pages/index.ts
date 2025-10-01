@@ -6,5 +6,6 @@ export { AuditPage } from "./AuditPage";
 
 
 
+
 // re-export directo desde src/components/scada/utils.ts
 export { labelOfTab } from "../utils";

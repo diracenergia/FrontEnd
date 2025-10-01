@@ -152,13 +152,11 @@ export function TankCard({
 }
 
 /* =====================
-   PumpCard
+   PumpCard (mejorada)
 ===================== */
 
 const safeDate = (iso?: string | null) =>
   iso ? new Date(iso).toLocaleString("es-AR", { hour12: false }) : "—";
-const safeNum = (n: unknown) =>
-  typeof n === "number" && isFinite(n) ? n.toLocaleString("es-AR") : "—";
 
 export function PumpCard({
   pump,
@@ -171,62 +169,83 @@ export function PumpCard({
   signal?: "ok" | "warn" | "bad";
   status?: ConnStatus;
 }) {
-  const l = pump.latest;
+  const l = pump?.latest;
   const isOn = !!l?.is_on;
 
   // ---- Conexión: WS o fallback por timestamp de última lectura ----
   const fallbackAge = secSince(l?.ts);
   const fallbackTone: ConnStatus["tone"] =
     fallbackAge < WARN_SEC ? "ok" : fallbackAge < CRIT_SEC ? "warn" : "bad";
-  const conn: ConnStatus = status ?? { online: fallbackAge < CRIT_SEC, ageSec: fallbackAge, tone: fallbackTone };
+  const conn: ConnStatus = status ?? {
+    online: fallbackAge < CRIT_SEC,
+    ageSec: fallbackAge,
+    tone: fallbackTone,
+  };
 
-  // combinar señal con status
+  // Combinar señal con status
   const tone = conn.tone ?? signal;
+
+  // Colores derivados del tono para detalles sutiles
+  const toneRing =
+    tone === "ok" ? "ring-emerald-300" : tone === "warn" ? "ring-amber-300" : "ring-rose-300";
+  const toneGlow =
+    tone === "ok" ? "from-emerald-200/40" : tone === "warn" ? "from-amber-200/40" : "from-rose-200/40";
+
+  // Condición de giro: SOLO si hay conexión y está ON
+  const canSpin = Boolean(conn.online && isOn);
+
+  // Atenuación global por conectividad
   const dimClass =
     tone === "bad"
-      ? "filter grayscale opacity-60"
+      ? "grayscale opacity-60"
       : tone === "warn"
-      ? "filter saturate-50 opacity-90"
+      ? "saturate-75"
       : "";
-
-  const flowPct =
-    typeof l?.flow_lpm === "number" && typeof pump?.maxFlowLpm === "number" && pump.maxFlowLpm > 0
-      ? Math.max(0, Math.min(100, (l.flow_lpm / pump.maxFlowLpm) * 100))
-      : null;
-
-  const maxPressure = typeof pump?.maxPressureBar === "number" ? pump.maxPressureBar : null;
-  const pressurePct =
-    typeof l?.pressure_bar === "number" && typeof maxPressure === "number" && maxPressure > 0
-      ? Math.max(0, Math.min(100, (l.pressure_bar / maxPressure) * 100))
-      : null;
 
   return (
     <button
       onClick={onClick}
-      className={`border rounded-2xl p-4 text-left w-full bg-white hover:shadow-lg transition ${dimClass}`}
-      aria-label={`Bomba ${pump.name}`}
+      className={`group relative w-full overflow-hidden rounded-2xl border border-slate-200 bg-white/80 p-4 text-left backdrop-blur transition hover:shadow-xl ${dimClass}`}
+      aria-label={`Bomba ${pump?.name ?? ""}`}
     >
+      {/* Glow decorativo según tono */}
+      <div
+        className={`pointer-events-none absolute -top-16 -right-16 h-40 w-40 rounded-full bg-gradient-to-br ${toneGlow} to-transparent blur-2xl`}
+      />
+
+      {/* Header: nombre + estado */}
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="font-medium text-slate-800">{pump.name}</div>
-          <div className="text-xs text-slate-500">
-            Modelo: {pump.model ?? "—"} · Máx: {safeNum(pump.maxFlowLpm)} L/min
+          <div className="font-semibold text-slate-900">{pump?.name ?? "—"}</div>
+          <div className="text-[11px] text-slate-500">
+            {conn.online ? "Conectada" : "Desconectada"}
+            {typeof conn.ageSec === "number" && isFinite(conn.ageSec) && conn.online
+              ? ` · ${fmtAgoShort(conn.ageSec)}`
+              : ""}
           </div>
         </div>
 
         {/* Conexión + ON/OFF */}
         <div className="flex items-center gap-2">
-          <Badge tone={conn.tone}>
+          <Badge tone={tone}>
             {conn.online
               ? `Online${Number.isFinite(conn.ageSec) ? ` · ${fmtAgoShort(conn.ageSec)}` : ""}`
               : "Offline"}
           </Badge>
-          <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${isOn ? "bg-emerald-500" : "bg-slate-300"}`}>
+
+          {/* Luz de estado + chip ON/OFF */}
+          <span
+            className={`relative inline-flex h-2.5 w-2.5 rounded-full ${
+              isOn ? "bg-emerald-500" : "bg-slate-300"
+            }`}
+          >
             {isOn && <span className="absolute inset-0 rounded-full animate-pulse-ring" />}
           </span>
           <span
             className={`text-xs px-2 py-0.5 rounded-full border ${
-              isOn ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-50 text-slate-600 border-slate-200"
+              isOn
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                : "bg-slate-50 text-slate-600 border-slate-200"
             }`}
           >
             {isOn ? "ON" : "OFF"}
@@ -234,35 +253,63 @@ export function PumpCard({
         </div>
       </div>
 
-      {l ? (
-        <div className="mt-3 grid grid-cols-2 gap-4">
-          <MetricTile label="Caudal" value={`${safeNum(l.flow_lpm)} L/min`}>
-            {flowPct !== null && <Bar pct={flowPct} ariaLabel="Caudal relativo" />}
-          </MetricTile>
-
-          <MetricTile label="Presión" value={`${safeNum(l.pressure_bar)} bar`}>
-            {pressurePct !== null && <Bar pct={pressurePct} ariaLabel="Presión relativa" />}
-          </MetricTile>
-
-          <MetricTile label="Voltaje" value={safeNum(l.voltage_v)} suffix="V" />
-          <MetricTile label="Corriente" value={safeNum(l.current_a)} suffix="A" />
-
-          <div className="col-span-2 flex items-center justify-between rounded-xl border bg-slate-50/60 p-3">
-            <div className="text-xs text-slate-500">Última lectura</div>
-            <div className="text-xs text-slate-600">{safeDate(l.ts)}</div>
-            <div className="ml-3 w-8 h-8 text-slate-400">
-              <Impeller spinning={isOn} />
-            </div>
-          </div>
+      {/* Última lectura + Impeller */}
+      <div className="mt-3 flex items-center justify-between rounded-xl border bg-slate-50/70 p-3">
+        <div className="flex items-center gap-2 text-xs text-slate-600">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="opacity-70"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
+          <span>Última lectura</span>
         </div>
-      ) : (
-        <div className="mt-3 text-slate-400 text-sm">Sin lecturas</div>
-      )}
+
+        <div className="text-xs font-medium text-slate-700">{safeDate(l?.ts)}</div>
+
+        {/* Impeller: gira solo si canSpin; si no, muestra candado sutil */}
+        <div className="ml-3 relative grid h-10 w-10 place-items-center">
+          <div
+            className={`absolute inset-0 rounded-full ring-2 ${toneRing} transition-transform group-hover:scale-105`}
+          />
+          <div className={`relative h-8 w-8 ${canSpin ? "text-emerald-500" : "text-slate-400"}`}>
+            <Impeller spinning={canSpin} />
+          </div>
+          {!canSpin && (
+            <span
+              className="pointer-events-none absolute inset-0 grid place-items-center text-slate-400/70"
+              title={!conn.online ? "Sin conexión" : "Apagada"}
+            >
+              <LockIcon className="h-3.5 w-3.5" />
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Etiqueta mini debajo del impulsor */}
+      <div className="mt-2 text-right text-[10px]">
+        {canSpin ? (
+          <span className="text-emerald-600">Listo Arrancar</span>
+        ) : !conn.online ? (
+          <span className="text-slate-500">Sin conexión</span>
+        ) : (
+          <span className="text-slate-500">Apagada</span>
+        )}
+      </div>
 
       <style>
         {`
         @keyframes rotate360 { to { transform: rotate(360deg); } }
-        .impeller-spin { animation: rotate360 1.2s linear infinite; }
+        .impeller-spin { animation: rotate360 1.1s linear infinite; }
 
         @keyframes pulseRing {
           0% { box-shadow: 0 0 0 0 rgba(16,185,129,0.45); }
@@ -296,11 +343,11 @@ function fmtAgoShort(sec: number) {
 
 function MetricTile({ label, value, suffix, children }: any) {
   return (
-    <div className="rounded-xl border p-3 bg-slate-50/60">
+    <div className="rounded-xl border bg-slate-50/60 p-3">
       <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="text-lg font-semibold text-slate-800 tabular-nums">
+      <div className="tabular-nums text-lg font-semibold text-slate-800">
         {value}
-        {suffix ? <span className="ml-1 text-slate-500 text-sm">{suffix}</span> : null}
+        {suffix ? <span className="ml-1 text-sm text-slate-500">{suffix}</span> : null}
       </div>
       {children}
     </div>
@@ -311,7 +358,7 @@ function Bar({ pct, ariaLabel }: { pct: number; ariaLabel?: string }) {
   const p = Math.max(0, Math.min(100, pct));
   return (
     <div className="mt-2" aria-label={ariaLabel}>
-      <div className="h-2 w-full rounded-full bg-slate-200 overflow-hidden">
+      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
         <div
           className="h-full bg-gradient-to-r from-emerald-500 via-cyan-500 to-sky-500"
           style={{ width: `${p}%`, transition: "width 600ms ease" }}
@@ -332,6 +379,15 @@ function Impeller({ spinning = false }: { spinning?: boolean }) {
         <path d="M32 58a6 6 0 0 1-6-6c0-7 3-12 6-12s6 5 6 12a6 6 0 0 1-6 6Z" />
         <path d="M6 32a6 6 0 0 1 6-6c7 0 12 3 12 6s-5 6-12 6a6 6 0 0 1-6-6Z" />
       </g>
+    </svg>
+  );
+}
+
+function LockIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="4" y="10" width="16" height="10" rx="2" />
+      <path d="M8 10V7a4 4 0 1 1 8 0v3" />
     </svg>
   );
 }

@@ -1,4 +1,3 @@
-// hooks/usePresenceSimple.ts
 import { useEffect, useRef, useState } from "react";
 import { fetchPresenceSimple, PresenceItem } from "@/lib/presence";
 
@@ -13,9 +12,11 @@ export function usePresenceSimple(apiRoot: string, pollMs = 10000) {
         const arr = await fetchPresenceSimple(apiRoot);
         if (!cancelled) {
           arr.forEach(i => mapRef.current.set(i.node_id, i));
-          setTick(x => x + 1);
+          setTick(x => x + 1); // fuerza un re-render liviano
         }
-      } catch {}
+      } catch (e) {
+        // opcional: log
+      }
     }
     load();
     const id = setInterval(load, pollMs);
@@ -23,5 +24,5 @@ export function usePresenceSimple(apiRoot: string, pollMs = 10000) {
   }, [apiRoot, pollMs]);
 
   const get = (nodeId: string) => mapRef.current.get(nodeId);
-  return { get, tick }; // usar 'tick' para re-render mínimo
+  return { get, tick };
 }
