@@ -1,35 +1,24 @@
-import React from 'react'
-import { createRoot } from 'react-dom/client'
-import KpiWidget from './widget'
-import { enableParentAutoHeight } from './embed'
-import './index.css'
+// kpi/src/main.tsx
+import React from "react";
+import { createRoot } from "react-dom/client";
+import "./index.css";
+import KpiWidget from "./widget";
+import { initEmbed, waitForCtx } from "./embed";
 
-// Opción A: llamarlo antes del render (sirve perfecto)
-enableParentAutoHeight()
+initEmbed();
 
-function App() {
-  return (
-    <KpiWidget
-      title="Tablero de KPIs"
-      data={{
-        kpis: [
-          { label: 'Recaudación', value: 145000000, delta: 12.3 },
-          { label: 'Gastos', value: 126000000, delta: -3.8 },
-          { label: 'Órdenes', value: 5421, delta: 2.2 }
-        ],
-        series: [
-          { name: 'Recaudación', data: [100, 130, 120, 145] },
-          { name: 'Gastos', data: [95, 110, 115, 126] }
-        ],
-        categories: ['Ene', 'Feb', 'Mar', 'Abr']
-      }}
-      compact={false}
-    />
-  )
+async function bootstrap() {
+  try {
+    const ctx = await waitForCtx({ timeout: 4000, needApiBase: true });
+    console.info("[KPI] ctx listo:", ctx);
+  } catch (e) {
+    console.warn("[KPI] ctx no llegó a tiempo; sigo con lo que haya", e);
+  }
+
+  createRoot(document.getElementById("root")!).render(
+    <React.StrictMode>
+      <KpiWidget title="Tablero de KPIs" />
+    </React.StrictMode>
+  );
 }
-
-createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-)
+bootstrap();

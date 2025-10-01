@@ -1,6 +1,6 @@
 // src/lib/api.ts
 
-/* ========= Config dinámica (API + API Key + ORG + WS) ========= */
+/* ========= Config dinámica (API + ORG + WS + (legacy) API Key para WS) ========= */
 
 const ENV = (import.meta as any)?.env ?? {};
 
@@ -31,12 +31,12 @@ if (savedApi && RUNTIME_ORIGIN && trimSlash(savedApi) === RUNTIME_ORIGIN) { lsDe
 
 let API = trimSlash(ENV_API_HTTP || savedApi || DEFAULT_API_HTTP);
 
-// API key (env > saved > default dev)
+// (LEGACY) API key: ya no se envía por HTTP; se deja para WS si tu backend lo usa
 const envKey = (ENV.VITE_API_KEY as string | undefined) ?? "";
 const storedKey = lsGet("apiKey", "");
 let API_KEY = (envKey || storedKey || (isDev ? "simulador123" : ""));
 
-// ORG_ID (env > saved > default 1)
+// ORG_ID (env > saved > default 1) — solo se manda cuando NO hay token
 const envOrg = (ENV.VITE_ORG_ID as string | undefined) ?? "";
 let ORG_ID = Number(lsGet("orgId", "")) || Number(envOrg) || 1;
 
@@ -59,6 +59,23 @@ const RAW_ENV_WS =
   (ENV.VITE_API_WS_URL as string | undefined) ??
   "";
 let WS_BASE_OR_ENDPOINT = trimSlash(RAW_ENV_WS || wsFromHttpBase(API));
+
+/* ========= Auth (JWT) ========= */
+
+// Token en LS
+const TOKEN_KEY = "rdls_token";
+function getToken() { return lsGet(TOKEN_KEY, ""); }
+function setToken(t: string) { lsSet(TOKEN_KEY, t); }
+function clearToken() { lsDel(TOKEN_KEY); }
+
+// Decodificador mínimo de JWT (sin validar firma, solo UI)
+function decodeJwt(t: string): any {
+  try {
+    const b = t.split(".")[1] ?? "";
+    const padded = b.padEnd(b.length + (4 - (b.length % 4)) % 4, "=");
+    return JSON.parse(atob(padded.replace(/-/g, "+").replace(/_/g, "/")));
+  } catch { return {}; }
+}
 
 /* ========= Setters / Getters ========= */
 
@@ -136,13 +153,20 @@ export async function pingHealth(): Promise<{ ok: boolean }> {
 /* ========= Headers comunes ========= */
 
 function authHeaders(extra?: HeadersInit): HeadersInit {
-  const base: HeadersInit = {
+  const h: Record<string, string> = {
     Accept: "application/json",
-    "X-API-Key": String(API_KEY),
-    "X-Org-Id": String(ORG_ID),              // <<<<<< IMPORTANTE
-    Authorization: `Bearer ${String(API_KEY)}`, // compat futura
   };
-  return { ...base, ...(extra ?? {}) };
+
+  const token = getToken();
+  if (token) {
+    h.Authorization = `Bearer ${token}`;
+  } else {
+    // fallback legacy: si no hay login, dejamos pasar ORG para endpoints públicos
+    h["X-Org-Id"] = String(ORG_ID);
+  }
+
+  if (extra) Object.assign(h, extra);
+  return h;
 }
 
 /* ========= Helpers HTTP con retries ========= */
@@ -207,6 +231,10 @@ async function jrequest<T>(
       }
 
       if (!r.ok) {
+        // si expira el token, limpiamos y dejamos que el caller maneje el error
+        if (r.status === 401) {
+          clearToken();
+        }
         throw new Error(`${method} ${path} -> ${httpErrorMessage(r, data)}`);
       }
       return data as T;
@@ -372,6 +400,10 @@ export type PumpWithConfig = {
   vfd_min_speed_pct: number | null;
   vfd_max_speed_pct: number | null;
   vfd_default_speed_pct: number | null;
+  // opcional: si el front agrupa por ubicación
+  location_id?: number | null;
+  location_code?: string | null;
+  location_name?: string | null;
 };
 export type PumpConfigIn = {
   remote_enabled?: boolean | null;
@@ -418,35 +450,89 @@ export type PresenceStatus = {
   last_seen: string | null;
 };
 
+/* ========= Utilidades de normalización ========= */
+
+const num = (v: unknown) =>
+  v === null || v === undefined || v === "" ? null : Number(v);
+
 /* ========= Endpoints ========= */
 
 export const api = {
   /* ---- Tanks ---- */
   listTanks: () => jget<Tank[]>("/tanks"),
 
-  // tolerante a 404
-  tankLatest: async (id: number) => {
+  // tolerante a id indefinido y a has_data=false
+  tankLatest: async (id?: number): Promise<TankLatest | null> => {
+    if (id == null || !Number.isFinite(id)) return null;
+
     const fallback: TankLatest = {
-      id, ts: new Date(0).toISOString(),
-      level_percent: null, volume_l: null, temperature_c: null,
-      extra: null, reading_id: undefined,
+      id,
+      ts: new Date(0).toISOString(),
+      level_percent: null,
+      volume_l: null,
+      temperature_c: null,
+      extra: null,
+      reading_id: undefined,
     };
-    return await jgetOr<TankLatest>(`/tanks/${id}/latest`, () => fallback);
+
+    const raw = await jgetOr<any>(`/tanks/${id}/latest`, () => null);
+    if (!raw || raw.has_data === false) return fallback;
+
+    // Si falta volume_l pero viene capacity_m3 + level_percent, estimamos
+    let volume_l: number | null = num(raw?.volume_l);
+    const level_pct = num(raw?.level_percent);
+    const capacity_m3 = num(raw?.capacity_m3);
+    if ((volume_l === null || Number.isNaN(volume_l)) && capacity_m3 != null && level_pct != null) {
+      volume_l = Math.round(capacity_m3 * 1000 * (level_pct / 100));
+    }
+
+    const out: TankLatest = {
+      id: Number(raw?.tank_id ?? id),
+      ts: String(raw?.ts ?? fallback.ts),
+      level_percent: level_pct,
+      volume_l: volume_l,
+      temperature_c: num(raw?.temperature_c),
+      extra: raw?.raw_json ?? null,
+      reading_id: raw?.id ?? undefined,
+    };
+    return out;
   },
 
   tankHistory: async (id: number, limit = 100) =>
     await jgetOr<TankHistoryPoint[]>(`/tanks/${id}/history${qs({ limit })}`, () => []),
 
   /* ---- Config Tanks ---- */
-  listTanksWithConfig: async () => {
+  listTanksWithConfig: async (): Promise<TankWithConfig[]> => {
     const raw = await jgetOr<any[]>("/tanks/config", () => []);
-    return raw.map((r) => ({
-      ...r,
-      capacity_liters:
-        r.capacity_liters ??
-        (typeof r.capacity_m3 === "number" ? Math.round(r.capacity_m3 * 1000) : null),
-    })) as TankWithConfig[];
+    return raw.map((r) => {
+      const id = Number(r.id ?? r.tank_id);
+      const name = String(r.name ?? r.tank_name ?? `Tank ${id}`);
+      let capacity_liters: number | null = null;
+
+      if (r.capacity_liters != null) {
+        capacity_liters = num(r.capacity_liters);
+      } else if (r.capacity_m3 != null) {
+        const cm3 = num(r.capacity_m3);
+        capacity_liters = cm3 != null ? Math.round(cm3 * 1000) : null;
+      }
+
+      return {
+        id,
+        name,
+        capacity_liters,
+        low_pct: num(r.low_pct),
+        low_low_pct: num(r.low_low_pct),
+        high_pct: num(r.high_pct),
+        high_high_pct: num(r.high_high_pct),
+        material: r.material ?? null,
+        fluid: r.fluid ?? null,
+        install_year: r.install_year ?? null,
+        // opcional: mostramos el nombre de location si está
+        location_text: r.location_name ?? null,
+      } as TankWithConfig;
+    });
   },
+
   saveTankConfig: async (tankId: number, cfg: TankConfigIn) => {
     try {
       return await jput<{ ok: true; config: any }>(`/tanks/${tankId}/config`, cfg);
@@ -461,14 +547,29 @@ export const api = {
   /* ---- Pumps ---- */
   listPumps: () => jget<Pump[]>("/pumps"),
 
-  // tolerante a 404
+  // tolerante a 404 y a has_data=false
   pumpLatest: async (id: number) => {
     const fallback: PumpLatest = {
       id, ts: new Date(0).toISOString(),
       is_on: null, flow_lpm: null, pressure_bar: null, voltage_v: null, current_a: null,
       control_mode: null, manual_lockout: null, extra: null, reading_id: undefined,
     };
-    return await jgetOr<PumpLatest>(`/pumps/${id}/latest`, () => fallback);
+    const raw = await jgetOr<any>(`/pumps/${id}/latest`, () => null);
+    if (!raw || raw.has_data === false) return fallback;
+
+    return {
+      id: Number(raw?.pump_id ?? id),
+      ts: String(raw?.ts ?? fallback.ts),
+      is_on: typeof raw?.is_on === "boolean" ? raw.is_on : (raw?.is_on == null ? null : !!raw.is_on),
+      flow_lpm: num(raw?.flow_lpm),
+      pressure_bar: num(raw?.pressure_bar),
+      voltage_v: num(raw?.voltage_v),
+      current_a: num(raw?.current_a),
+      control_mode: raw?.control_mode ?? null,
+      manual_lockout: raw?.manual_lockout ?? null,
+      extra: raw?.raw_json ?? null,
+      reading_id: raw?.id ?? undefined,
+    } as PumpLatest;
   },
 
   pumpHistory: async (id: number, limit = 100) =>
@@ -595,3 +696,40 @@ export async function fetchAssetLocationMap(): Promise<Map<string, number>> {
   );
   return new Map(pairs);
 }
+
+/* ========= Auth client (login/logout) ========= */
+
+export const auth = {
+  async login(username: string, password: string, org_id: number) {
+    // usamos fetch directo para no enviar headers de auth si aún no hay token
+    const res = await fetch(`${API}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ username, password, org_id }),
+    });
+
+    let data: any = null;
+    try { data = await res.json(); } catch { /* noop */ }
+
+    if (!res.ok) {
+      const detail = data?.detail || res.statusText;
+      if (res.status === 401) throw new Error("Usuario o contraseña incorrectos");
+      if (res.status === 403) throw new Error("No tenés acceso a esa organización");
+      throw new Error(`Login falló (${res.status}): ${detail}`);
+    }
+
+    const token: string = data.access_token;
+    setToken(token);
+
+    // Si quisieras sincronizar ORG_ID legacy cuando no usemos token:
+    // setOrgId(Number(decodeJwt(token)?.org_id ?? org_id));
+
+    return { token, exp: data.exp, payload: decodeJwt(token) };
+  },
+
+  logout() { clearToken(); },
+
+  token: () => getToken(),
+  isAuthed: () => !!getToken(),
+  decode: () => decodeJwt(getToken()),
+};

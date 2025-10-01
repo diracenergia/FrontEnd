@@ -12,13 +12,10 @@ import { PumpFaceplate } from "./faceplates/PumpFaceplate";
 import { connectTelemetryWS, onWS } from "../../lib/ws";
 // 🔌 REST (infraestructura para mapping de localidades -> activos)
 import { infra2 } from "../../lib/api";
-
-// 🔌 Loader de micro-apps (iframe / module) a partir del manifest
+// 🔌 Loader de micro-apps (iframe / module)
 import { loadApps } from "../../loader";
 
 const DEFAULT_THRESHOLDS = { lowCritical: 10, lowWarning: 25, highWarning: 80, highCritical: 90 };
-
-// Umbrales de “online” por latencia del último heartbeat del dispositivo
 const ONLINE_WARN_SEC = Number((import.meta as any).env?.VITE_WS_WARN_SEC ?? 30);
 const ONLINE_CRIT_SEC = Number((import.meta as any).env?.VITE_WS_CRIT_SEC ?? 120);
 
@@ -36,15 +33,26 @@ type AppItem = {
   name: string;
   type: "iframe" | "module" | "webcomponent";
   url: string;
-  mount: string; // ej. "#app-kpi"
+  mount: string; // ej. "#kpi-root"
   tag?: string;
 };
 
 // Helpers generales
 const nowMs = () => Date.now();
 const pick = (m: any, k: string) => (m?.[k] !== undefined ? m[k] : m?.payload?.[k]);
-const toNum = (x: unknown): number | null =>
-  typeof x === "number" && Number.isFinite(x) ? x : null;
+const toNum = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) ? x : null);
+
+// 🧩 decode JWT local (para extraer org_id)
+function decodeJwt(token: string): any {
+  try {
+    const base64 = token.split(".")[1];
+    const padded = base64.padEnd(base64.length + (4 - (base64.length % 4)) % 4, "=");
+    const json = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+    return JSON.parse(json);
+  } catch {
+    return {};
+  }
+}
 
 export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   // -------- Tabs / manifest de micro-apps ----------
@@ -63,28 +71,50 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
         console.error("[shell] no pude leer el manifest", e);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
-  // Montar micro-apps cuando ya existan los panes en el DOM
+  // 👉 Montar micro-apps con CONTEXTO (orgId + apiBase + apiKey)
   React.useEffect(() => {
     if (!apps.length) return;
+
+    // Tomamos org_id del token guardado por el login
+    const token = localStorage.getItem("rdls_token") || "";
+    const payload = token ? decodeJwt(token) : {};
+    const orgFromToken = Number(payload?.org_id) || 0;
+
+    // fallback por query/env si hiciera falta
+    const urlOrg = Number(new URLSearchParams(location.search).get("org")) || 0;
+    const envOrg = Number((import.meta as any).env?.VITE_ORG_ID) || 0;
+
+    const orgId = orgFromToken || urlOrg || envOrg || 1;
+
+    // API base desde envs (o backend por defecto)
+    const apiBase =
+      (import.meta.env.VITE_API_URL as string) ||
+      (import.meta.env.VITE_API_BASE as string) ||
+      "https://backend-v85n.onrender.com";
+
+    const apiKey = (import.meta.env.VITE_API_KEY as string) || undefined;
+
+    const ctx = { orgId, apiBase, apiKey, authInQuery: false };
+
+    // (Opcional) habilitá logs del loader: localStorage.setItem("embed:debug","1")
+    console.log("[shell] loadApps ctx →", ctx);
+
     const id = requestAnimationFrame(() => {
-      loadApps("/apps.manifest.json", { version: "1.0.0" }).catch(console.error);
+      loadApps("/apps.manifest.json", { ctx }).catch((e) =>
+        console.error("[shell] loadApps error", e)
+      );
     });
     return () => cancelAnimationFrame(id);
   }, [apps]);
 
   // -------- Estado y lógica SCADA (Operaciones) ----------
   // Drawer para faceplates
-  const [drawer, setDrawer] = React.useState<{
-    type: "tank" | "pump" | null;
-    id?: string | number | null;
-  }>({ type: null });
+  const [drawer, setDrawer] = React.useState<{ type: "tank" | "pump" | null; id?: string | number | null }>({ type: null });
 
-  // Usuario mínimo
+  // Usuario mínimo (queda igual)
   const [user] = React.useState<User>(
     initialUser || { id: "u1", name: "operador@rdls", role: "operador" }
   );
@@ -93,13 +123,12 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
   const POLL_MS = Number((import.meta as any).env?.VITE_POLL_MS ?? 5000);
   const { plant, setPlant, loading, err, kpis } = usePlant(POLL_MS);
 
-  // Beats por dispositivo (online/offline)
+  // Beats por dispositivo
   const [beats, setBeats] = React.useState<Record<string, number>>({});
 
   // Mapeo activos ↔ localidades
   const [assetLocs, setAssetLocs] = React.useState<AssetLocLink[] | null>(null);
 
-  // Carga de mapeo localidades -> activos (paralelizada + cancel guard)
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -132,15 +161,12 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
         if (!cancelled) setAssetLocs([]); // evita null
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
   // Evitar doble conexión WS en StrictMode
   const wsStartedRef = React.useRef(false);
 
-  // Conexión WS + handlers
   React.useEffect(() => {
     if (wsStartedRef.current) return;
     wsStartedRef.current = true;
@@ -174,8 +200,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
             const idx = next.tanks.findIndex((t: any) => (t.tankId ?? t.id) === tkNum);
             if (idx >= 0) {
               const t = next.tanks[idx];
-              const levelPct =
-                typeof latest.level_percent === "number" ? latest.level_percent : t.levelPct;
+              const levelPct = typeof latest.level_percent === "number" ? latest.level_percent : t.levelPct;
               const capacityL = toNum(t.capacityL);
               const volumeL =
                 toNum(latest.volume_l) ??
@@ -210,11 +235,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
             const idx = next.pumps.findIndex((p: any) => (p.pumpId ?? p.id) === puNum);
             if (idx >= 0) {
               const p = next.pumps[idx];
-              next.pumps[idx] = {
-                ...p,
-                latest,
-                state: latest?.is_on ? "run" : "stop",
-              };
+              next.pumps[idx] = { ...p, latest, state: latest?.is_on ? "run" : "stop" };
             }
             return next;
           });
@@ -243,9 +264,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
       }
     });
 
-    return () => {
-      off();
-    };
+    return () => { off(); };
   }, [setPlant]);
 
   // Resumen de online/offline por activo
@@ -254,8 +273,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
       const last = beats[devId];
       if (!last) return { online: false, ageSec: Infinity, tone: "bad" as const };
       const ageSec = Math.round((nowMs() - last) / 1000);
-      const tone =
-        ageSec < ONLINE_WARN_SEC ? ("ok" as const) : ageSec < ONLINE_CRIT_SEC ? ("warn" as const) : ("bad" as const);
+      const tone = ageSec < ONLINE_WARN_SEC ? ("ok" as const) : ageSec < ONLINE_CRIT_SEC ? ("warn" as const) : ("bad" as const);
       return { online: ageSec < ONLINE_CRIT_SEC, ageSec, tone };
     };
 
@@ -275,18 +293,6 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
 
     return out;
   }, [plant, beats]);
-
-  // Cuerpo de Operaciones (único)
-  const operacionesBody = (
-    <OverviewGrid
-      plant={plant}
-      assetLocs={assetLocs ?? undefined}
-      onOpenTank={(id) => setDrawer({ type: "tank", id })}
-      onOpenPump={(id) => setDrawer({ type: "pump", id })}
-      statusByKey={statusByKey}
-      debug
-    />
-  );
 
   // ---------- UI ----------
   return (
@@ -323,7 +329,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
           <div className="text-xs text-slate-500">
             <div>Usuario: {user.name}</div>
             <div>Rol: {user.role}</div>
-            <div>Empresa: {user.company?.name ?? "—"}</div>
+            <div>Empresa: {(user as any).company?.name ?? (user as any).company ?? "—"}</div>
           </div>
         </aside>
 
@@ -336,22 +342,14 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
                 </div>
                 {activeTab === "operaciones" && (
                   <div className="hidden md:flex items-center gap-3 text-xs">
-                    <KpiPill
-                      label="Nivel promedio"
-                      value={loading && !plant.tanks?.length ? "…" : `${kpis.avg}%`}
-                      tone="ok"
-                    />
-                    <KpiPill
-                      label="Críticos"
-                      value={loading && !plant.tanks?.length ? "…" : `${kpis.crit}`}
-                      tone={kpis.crit ? "bad" : "ok"}
-                    />
+                    <KpiPill label="Nivel promedio" value={loading && !plant.tanks?.length ? "…" : `${kpis.avg}%`} tone="ok" />
+                    <KpiPill label="Críticos" value={loading && !plant.tanks?.length ? "…" : `${kpis.crit}`} tone={kpis.crit ? "bad" : "ok"} />
                   </div>
                 )}
               </div>
               <div className="flex items-center gap-2">
                 <span className="px-2 py-1 rounded-lg bg-slate-100 text-xs">
-                  {user.company?.name ?? "—"}
+                  {(user as any).company?.name ?? (user as any).company ?? "—"}
                 </span>
                 <button
                   onClick={() => {
@@ -373,7 +371,16 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
                 ? <div className="p-4">Cargando…</div>
                 : err
                 ? <div className="p-4 text-red-600">Error: {String(err)}</div>
-                : operacionesBody
+                : (
+                  <OverviewGrid
+                    plant={plant}
+                    assetLocs={assetLocs ?? undefined}
+                    onOpenTank={(id) => setDrawer({ type: "tank", id })}
+                    onOpenPump={(id) => setDrawer({ type: "pump", id })}
+                    statusByKey={statusByKey}
+                    debug
+                  />
+                )
               : null}
 
             {/* Panes de micro-apps: el loader inyecta el iframe/módulo dentro.
@@ -386,7 +393,13 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
                   key={a.name}
                   id={id}
                   className="pane"
-                  style={{ display: visible ? "block" : "none", padding: 0 }}
+                  style={{
+                    display: visible ? "block" : "none",
+                    padding: 0,
+                    position: "relative",
+                    overflow: "visible",
+                    zIndex: 0,
+                  }}
                 />
               );
             })}
@@ -394,7 +407,7 @@ export default function ScadaApp({ initialUser }: { initialUser?: User }) {
         </main>
       </div>
 
-      {/* Drawer de faceplates (tanque/bomba) */}
+      {/* Drawer de faceplates */}
       {(() => {
         const isTank = drawer.type === "tank";
         const t = isTank

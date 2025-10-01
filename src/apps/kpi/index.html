@@ -4,8 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>KPI Widget - Dev</title>
+
+    <!-- Marcar modo embebido ANTES del CSS/JS -->
+    <script>
+      try {
+        if (window.top !== window.self) {
+          document.documentElement.classList.add('is-embedded');
+        }
+      } catch (_e) {
+        document.documentElement.classList.add('is-embedded');
+      }
+    </script>
   </head>
-  <body style="margin:0; padding:2rem; font-family: ui-sans-serif, system-ui">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

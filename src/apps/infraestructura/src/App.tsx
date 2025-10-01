@@ -5,7 +5,7 @@ import { Layers3, Edit3 } from "lucide-react";
 import Button from "@/components/ui/Button";
 import Legend from "@/components/Legend";
 import Edge from "@/components/diagram/Edge";
-import { Tank, Pump, Valve, Manifold, AutoGroupBox } from "@/components/diagram/nodes";
+import { Tank, Pump, Valve, Manifold } from "@/components/diagram/nodes"; // 👈 sin AutoGroupBox
 import useDragNode from "@/hooks/useDragNode";
 import { nodeHalfSize } from "@/utils/nodeDims";
 import { computeAutoLayout } from "@/layout/auto";
@@ -14,156 +14,38 @@ import { setNodeResolver } from "@/utils/paths";
 import type { NodeBase } from "@/types/graph";
 import { usePresenceSimple } from "@/hooks/usePresenceSimple";
 
-/* ========= Bootstrap de configuración para iframes ========= */
-
-const CONFIG_EVENT = "EMBED_CONFIG_UPDATED";
-function notifyConfigUpdated() {
-  try { window.dispatchEvent(new Event(CONFIG_EVENT)); } catch {}
-}
-
-// 1) Leer config de la URL (?api_base=&api_key=&org_id=)
-function readConfigFromQuery() {
-  try {
-    const sp = new URLSearchParams(window.location.search);
-    const apiBase = sp.get("api_base") || sp.get("apiBase");
-    const apiKey  = sp.get("api_key")  || sp.get("apiKey");
-    const orgId   = sp.get("org_id")   || sp.get("orgId");
-    if (apiBase || apiKey || orgId) {
-      console.group("[EMBED][QUERY] Config recibida por query");
-      console.log("apiBase:", apiBase);
-      console.log("apiKey:", apiKey ? "(set)" : "(missing)");
-      console.log("orgId:", orgId);
-      console.groupEnd();
-    }
-    return { apiBase, apiKey, orgId };
-  } catch {
-    return {};
-  }
-}
-
-// 2) Guardar en localStorage de ESTE origen (iframe)
-function persistConfig({ apiBase, apiKey, orgId }: { apiBase?: string | null; apiKey?: string | null; orgId?: string | null; }) {
-  try {
-    if (apiBase) localStorage.setItem("apiBase", String(apiBase));
-    if (apiKey)  localStorage.setItem("apiKey",  String(apiKey));
-    if (orgId)   localStorage.setItem("orgId",   String(orgId));
-    console.group("[EMBED] persistConfig");
-    console.log("apiBase:", apiBase);
-    console.log("apiKey:", apiKey ? "(set)" : "(missing)");
-    console.log("orgId:", orgId);
-    console.groupEnd();
-    notifyConfigUpdated();
-  } catch {}
-}
-
-// 3) Handshake con el padre
-(function setupEmbedConfigHandshake() {
-  const q = readConfigFromQuery();
-  if (q.apiBase || q.apiKey || q.orgId) persistConfig(q);
-
-  window.addEventListener("message", (ev) => {
-    const data = ev?.data || {};
-    if (data?.type === "EMBED_CONFIG" && (data.apiBase || data.apiKey || data.orgId)) {
-      console.group("[EMBED][PM] EMBED_CONFIG recibido via postMessage");
-      console.log("data.apiBase:", data.apiBase);
-      console.log("data.apiKey:", data.apiKey ? "(set)" : "(missing)");
-      console.log("data.orgId:", data.orgId);
-      console.groupEnd();
-      persistConfig(data);
-      window.parent?.postMessage({ type: "EMBED_CONFIG_ACK" }, "*");
-    }
-  });
-
-  console.log("[EMBED] Enviando EMBED_READY al host…");
-  window.parent?.postMessage({ type: "EMBED_READY" }, "*");
-})();
+// ---- Embed (estilo KPI) ----
+import { initEmbed, onCtx, getCtx, ensureInfraBase, buildInfraHeaders } from "./embed";
+initEmbed();
 
 /* ============================
    Helpers de configuración
    ============================ */
-function envAny(): any { return (import.meta as any)?.env ?? {}; }
-function trimSlash(s: string) { return String(s || "").replace(/\/+$/, ""); }
-function ensureInfraBase(httpBase: string) {
-  const base = trimSlash(httpBase);
-  return base.endsWith("/infra") ? base : `${base}/infra`;
+function httpDefault(): string {
+  const origin = typeof window !== "undefined" ? (window.location.origin || "") : "";
+  return origin ? origin.replace(/\/+$/, "") : "http://127.0.0.1:8000";
 }
-
-
-
-// Asegurate de tener arriba del archivo:
-// /// <reference types="vite/client" />
-
-function getHttpDefault(): string {
-  // 1) En dev, si activaste proxy → usar rutas relativas (pasan por Vite)
-  if (import.meta.env?.DEV && import.meta.env.VITE_USE_PROXY === 'true') {
-    console.warn('[CFG] DEV+proxy: base="" (rutas relativas, Vite las proxyea)');
-    return '';
-  }
-
-  // 2) Si hay VITE_API_URL en .env → usarla
-  const envBase = import.meta.env?.VITE_API_URL as string | undefined;
-  if (envBase) {
-    const b = envBase.replace(/\/+$/, '').replace(/\/infra$/i, '');
-    console.warn('[CFG] Usando VITE_API_URL =', b);
-    return b;
-  }
-
-  // 3) Mismo origen (sin barra final)
-  const origin = typeof window !== 'undefined' ? (window.location.origin || '') : '';
-  if (origin) return origin.replace(/\/+$/, '');
-
-  // 4) Último fallback
-  return 'http://127.0.0.1:8000';
+function getApiRoot(): string {
+  const ctx = getCtx();
+  return (ctx.apiBase || httpDefault()).replace(/\/+$/, "");
 }
-
-
-
-
-
-
-/** Base HTTP para /infra (ENV > LS > default coherente) */
 function getInfraBase(): string {
-  const e = envAny();
-  const envBase = trimSlash(e?.VITE_API_URL || e?.VITE_API_HTTP_URL || "");
-  const lsBase  = typeof localStorage !== "undefined" ? trimSlash(localStorage.getItem("apiBase") || "") : "";
-  const base    = trimSlash(envBase || lsBase || getHttpDefault());
-  const finalBase = ensureInfraBase(base);
-  if (/^http:\/\/(localhost|127\.0\.0\.1):517\d\/infra$/i.test(finalBase)) {
-    console.warn("[EMBED][WARN] La base apunta al dev-server de Vite:", finalBase, "→ esto dará 404. Configurá api_base o VITE_API_URL.");
-  }
-  return finalBase;
+  // ensureInfraBase YA devuelve con /infra cuando corresponde → no concatenamos de nuevo
+  return ensureInfraBase(getApiRoot()).replace(/\/+$/, "");
 }
-/** API Key (ENV > LS > sin fallback) */
-function getApiKey(): string {
-  const e = envAny();
-  const envKey = String(e?.VITE_API_KEY || "");
-  const lsKey  = typeof localStorage !== "undefined" ? String(localStorage.getItem("apiKey") || "") : "";
-  const key = envKey || lsKey || "";
-  if (!key) console.warn("[EMBED][WARN] API Key ausente.");
-  return key;
-}
-/** Org Id (ENV > LS > default "1") */
 function getOrgId(): string {
-  const e = envAny();
-  const raw = e?.VITE_ORG_ID ?? (typeof localStorage !== "undefined" ? localStorage.getItem("orgId") : null);
-  const n = Number(raw);
+  const n = Number(getCtx().orgId);
   return Number.isFinite(n) && n > 0 ? String(n) : "1";
 }
-/** Headers comunes para backend */
 function infraHeaders(): HeadersInit {
-  const h: Record<string, string> = { Accept: "application/json" };
-  const key = getApiKey();
-  if (key) { h["X-API-Key"] = key; h["Authorization"] = `Bearer ${key}`; }
-  const org = getOrgId();
-  if (org) h["X-Org-Id"] = org;
-  return h;
+  return buildInfraHeaders(getCtx());
 }
 async function fetchJSON<T>(url: string): Promise<T> {
   const headers = infraHeaders();
   console.groupCollapsed("[FETCH] GET", url);
   console.log("base:", getInfraBase());
   console.log("orgId:", getOrgId());
-  console.log("apiKey:", getApiKey() ? "(set)" : "(missing)");
+  console.log("apiKey:", getCtx().apiKey ? "(set)" : "(missing)");
   console.log("headers:", headers);
   console.groupEnd();
 
@@ -171,7 +53,7 @@ async function fetchJSON<T>(url: string): Promise<T> {
   if (!r.ok) {
     let text = "";
     try { text = await r.text(); } catch {}
-    const diag = `(${r.status}) ${r.statusText} • base=${getInfraBase()} • org=${getOrgId()} • key=${getApiKey() ? "set" : "missing"}`;
+    const diag = `(${r.status}) ${r.statusText} • base=${getInfraBase()} • org=${getOrgId()} • key=${getCtx().apiKey ? "set" : "missing"}`;
     console.error("[FETCH][ERROR]", url, diag, text);
     throw new Error(`${diag}${text ? " • " + text : ""}`);
   }
@@ -195,48 +77,26 @@ async function saveNodePosToBackend(id: string, x: number, y: number) {
 }
 
 /* ============================
-   API root (para /conn/simple)
-   ============================ */
-function getApiRoot(): string {
-  // Igual a getHttpDefault() pero SIN ensureInfraBase
-  const e = envAny();
-  const envBase = trimSlash(e?.VITE_API_URL || e?.VITE_API_HTTP_URL || "");
-  const lsBase  = typeof localStorage !== "undefined" ? trimSlash(localStorage.getItem("apiBase") || "") : "";
-  const base    = trimSlash(envBase || lsBase || getHttpDefault());
-  return base; // p.ej. http://127.0.0.1:8000
-}
-
-/* ============================
-   Types para /infra/graph (lado App)
+   Types para /infra/graph
    ============================ */
 type ApiNode = {
   id?: string;
-  type: 'tank' | 'pump' | 'valve' | 'manifold';
+  type: "tank" | "pump" | "valve" | "manifold";
   name: string;
-
-  // Posición
   x?: number; y?: number;
-
-  // Identificadores
   code?: string | null;
   asset_id?: number;
-
-  // Tanks
   level?: number | null;
   capacity?: number | null;
   low_pct?: number | null;
   low_low_pct?: number | null;
   high_pct?: number | null;
   high_high_pct?: number | null;
-  tank_status?: 'ok'|'warn'|'crit'|'warning'|'critical'|'disconnected' | null;
+  tank_status?: "ok" | "warn" | "crit" | "warning" | "critical" | "disconnected" | null;
   tank_color_hex?: string | null;
-
-  // Pumps
-  status?: boolean | 'on'|'standby'|'fault'|'unknown' | null;
+  status?: boolean | "on" | "standby" | "fault" | "unknown" | null;
   kW?: number | null;
-
-  // Valves
-  state?: 'open'|'closed'|'throttle' | null;
+  state?: "open" | "closed" | "throttle" | null;
 };
 type ApiGraph = { nodes: ApiNode[]; edges: string[] };
 type AB = { a: string; b: string };
@@ -268,7 +128,6 @@ function nodesBBox(nodes: NodeBase[], pad = 120) {
   return { minX, minY, maxX, maxY, w, h };
 }
 
-
 export default function App() {
   const [edit, setEdit] = useState(false);
   const [tick, setTick] = useState(0);
@@ -279,37 +138,18 @@ export default function App() {
   const [edges, setEdges] = useState<AB[]>([]);
 
   // Presencia simple desde /conn/simple (poll cada 10s)
-  const API_ROOT =
-    (typeof getApiRoot === "function" ? getApiRoot() : undefined) ||
-    (import.meta as any)?.env?.VITE_API_URL ||
-    localStorage.getItem("apiBase") ||
-    "";
+  const API_ROOT = getApiRoot();
   const { get: getPresence, tick: presenceTick } = usePresenceSimple(API_ROOT, 10000);
 
-  // Registrar resolver global para orthogonalPath(a,b)
-  useEffect(() => {
-    setNodeResolver((id) => byId[id]);
-  }, [byId]);
+  // Resolver global para orthogonalPath(a,b)
+  useEffect(() => { setNodeResolver((id) => byId[id]); }, [byId]);
 
-  // escucha cambios de config (cuando el host manda EMBED_CONFIG)
+  // Reintentos cuando cambie el ctx (EMBED_INIT / cambio org)
   const [configTick, setConfigTick] = useState(0);
   useEffect(() => {
-    const onCfg = () => { console.log("[EMBED] Config actualizada, reintentando cargas…"); setConfigTick((t) => t + 1); };
-    window.addEventListener(CONFIG_EVENT, onCfg);
-    return () => window.removeEventListener(CONFIG_EVENT, onCfg);
-  }, []);
-
-  // === Reportar altura al padre (evita doble scroll) ===
-  useEffect(() => {
-    const reportHeight = () => {
-      const h = document.documentElement.scrollHeight;
-      window.parent?.postMessage({ type: "EMBED_HEIGHT", height: h }, "*");
-    };
-    reportHeight();
-    const ro = new ResizeObserver(reportHeight);
-    ro.observe(document.documentElement);
-    window.addEventListener("load", reportHeight);
-    return () => { ro.disconnect(); window.removeEventListener("load", reportHeight); };
+    const unsub = onCtx(() => setConfigTick((t) => t + 1));
+    setConfigTick((t) => t + 1); // intento inicial (por si vino ?org=)
+    return () => { try { unsub(); } catch {} };
   }, []);
 
   // --------------------------
@@ -404,9 +244,7 @@ export default function App() {
 
         // mapear nodos API -> NodeBase (id estable del backend)
         let mapped: NodeBase[] = (data.nodes || []).map((n) => {
-          const id =
-            n.id ||
-            (n.code ? `${n.type}:${n.code}` : `${n.type}_${n.asset_id ?? ""}`);
+          const id = n.id || (n.code ? `${n.type}:${n.code}` : `${n.type}_${n.asset_id ?? ""}`);
 
           const base: NodeBase = {
             id,
@@ -419,35 +257,27 @@ export default function App() {
           };
 
           if (n.type === "tank") {
-            // normalizar level (acepta 0..1 o 0..100)
             const lvlRaw = (n.level as any);
             const lvl =
               typeof lvlRaw === "number"
-                ? (lvlRaw > 1
-                    ? Math.max(0, Math.min(100, lvlRaw)) / 100
-                    : Math.max(0, Math.min(1, lvlRaw)))
+                ? (lvlRaw > 1 ? Math.max(0, Math.min(100, lvlRaw)) / 100 : Math.max(0, Math.min(1, lvlRaw)))
                 : undefined;
 
             base.level = lvl;
             base.capacity = n.capacity ?? undefined;
 
-            // Umbrales (para pintar WARN/CRIT en nodes.tsx)
             (base as any).low_pct       = (n as any).low_pct ?? undefined;
             (base as any).low_low_pct   = (n as any).low_low_pct ?? undefined;
             (base as any).high_pct      = (n as any).high_pct ?? undefined;
             (base as any).high_high_pct = (n as any).high_high_pct ?? undefined;
 
-            // (opcional) color/estado provisto por backend
             (base as any).tank_color_hex = (n as any).tank_color_hex ?? undefined;
             (base as any).tank_status    = (n as any).tank_status ?? undefined;
           }
 
           if (n.type === "pump") {
             const stRaw = (n.status as any);
-            const st =
-              typeof stRaw === "boolean"
-                ? stRaw ? "on" : "standby"
-                : (stRaw ?? "unknown");
+            const st = typeof stRaw === "boolean" ? (stRaw ? "on" : "standby") : (stRaw ?? "unknown");
             base.status = st as any;
             base.kW = n.kW ?? undefined;
           }
@@ -460,27 +290,27 @@ export default function App() {
         });
 
         // autolayout si no vinieron posiciones
-        const needLayout = mapped.some(
-          (m) => !Number.isFinite(m.x) || !Number.isFinite(m.y)
-        );
+        const needLayout = mapped.some((m) => !Number.isFinite(m.x) || !Number.isFinite(m.y));
         if (needLayout) mapped = computeAutoLayout(mapped);
 
         setNodes(mapped);
 
-        // edges "SRC>DST" -> {a,b}
-        const parsed: AB[] = (data.edges || []).map((s) => {
-          const [aRaw, bRaw] = String(s).split(">");
-          return { a: aRaw, b: bRaw };
-        });
+        // edges "SRC>DST" -> {a,b} (dedupe)
+        const seen = new Set<string>();
+        const parsed: AB[] = [];
+        for (const s of data.edges || []) {
+          const raw = String(s);
+          if (seen.has(raw)) continue;
+          seen.add(raw);
+          const [aRaw, bRaw] = raw.split(">");
+          parsed.push({ a: aRaw, b: bRaw });
+        }
         setEdges(parsed);
 
         // fit al contenido
         setTimeout(() => fitToContent(), 0);
 
-        console.info("[EMBED] Graph cargado:", {
-          nodes: mapped.length,
-          edges: parsed.length,
-        });
+        console.info("[EMBED] Graph cargado:", { nodes: mapped.length, edges: parsed.length });
       } catch (e) {
         console.warn("[EMBED] No se pudo cargar /infra/graph:", e);
         setNodes([]);
@@ -489,92 +319,71 @@ export default function App() {
     })();
   }, [configTick]);
 
-  // --------------------------
-  // Merge de /tanks/status → (ya no necesario: usamos umbrales del graph)
-  // --------------------------
+  // ============ PRESENCIA ============
   const nodesWithStatus = nodes;
-
-  // ============ PRESENCIA: mezclar tono ok/warn/bad antes de renderizar ============
   const nodesWithPresence = useMemo(() => {
     const base = (typeof nodesWithStatus !== "undefined" && nodesWithStatus) ? nodesWithStatus : nodes;
     return base.map((n) => {
-      const p = getPresence?.(n.id);           // n.id debe coincidir con node_id de /conn/simple
-      return p ? { ...n, conn_tone: p.tone }   // agrega conn_tone al nodo
-               : n;
+      const p = getPresence?.(n.id);
+      return p ? { ...n, conn_tone: p.tone } : n;
     });
   }, [nodes, (typeof nodesWithStatus !== "undefined" ? nodesWithStatus : null), getPresence, presenceTick]);
 
-// --- Helpers de estado hidráulico (flujo direccional) ---
-const isOnline = (n: NodeBase) => n.conn_tone === "ok"; // sin señal => no fluye
-const isOpenValve = (n: NodeBase) => n.type !== "valve" || n.state !== "closed";
-const isPumpAvailable = (n: NodeBase) => n.type === "pump" && n.status === "on" && isOnline(n);
+  // --- Helpers de estado hidráulico ---
+  const isOnline = (n: NodeBase) => n.conn_tone === "ok";
+  const isOpenValve = (n: NodeBase) => n.type !== "valve" || n.state !== "closed";
+  const isPumpAvailable = (n: NodeBase) => n.type === "pump" && n.status === "on" && isOnline(n);
 
-// Precomputo: aristas activas por alcanzabilidad desde bombas disponibles.
-// - Activa Tank->Pump si la bomba destino está disponible.
-// - Desde cada bomba disponible, BFS hacia adelante por Pump->Manifold,
-//   Manifold->Manifold, Manifold->Valve y Valve->Tank, cortando en válvula cerrada.
-// - Desde cada bomba disponible, BFS hacia adelante por Pump->Manifold,
-//   Manifold->Manifold, Manifold->Valve y Valve->Tank, cortando en válvula cerrada.
-const activeEdgeKeys = React.useMemo(() => {
-  const key = (a: string, b: string) => `${a}>${b}`;
-  const active = new Set<string>();
-  if (!edges.length || !nodesWithPresence.length) return active;
+  // Precomputo: aristas activas por alcanzabilidad desde bombas disponibles.
+  const activeEdgeKeys = React.useMemo(() => {
+    const key = (a: string, b: string) => `${a}>${b}`;
+    const active = new Set<string>();
+    if (!edges.length || !nodesWithPresence.length) return active;
 
-  // byId (incluye conn_tone gracias a nodesWithPresence)
-  const byId: Record<string, NodeBase> =
-    Object.fromEntries(nodesWithPresence.map(nn => [nn.id, nn]));
+    const byId: Record<string, NodeBase> = Object.fromEntries(nodesWithPresence.map(nn => [nn.id, nn]));
 
-  // 1) Tank -> Pump depende del estado de la bomba destino
-  for (const { a, b } of edges) {
-    const A = byId[a], B = byId[b];
-    if (!A || !B) continue;
-    if (!isOpenValve(A) || !isOpenValve(B)) continue;
-    if (A.type === "tank" && B.type === "pump" && isPumpAvailable(B)) {
-      active.add(key(a, b));
-    }
-  }
-
-  // 2) BFS desde bombas disponibles
-  const out = new Map<string, string[]>();
-  for (const { a, b } of edges) {
-    (out.get(a) || out.set(a, []).get(a)).push(b);
-  }
-
-  const queue: string[] = nodesWithPresence.filter(isPumpAvailable).map(n => n.id);
-  const seen = new Set(queue);
-
-  while (queue.length) {
-    const u = queue.shift()!;
-    const nexts = out.get(u) || [];
-    for (const v of nexts) {
-      const A = byId[u], B = byId[v];
+    // 1) Tank -> Pump depende del estado de la bomba destino
+    for (const { a, b } of edges) {
+      const A = byId[a], B = byId[b];
       if (!A || !B) continue;
       if (!isOpenValve(A) || !isOpenValve(B)) continue;
-
-      const allowed =
-        (A.type === "pump"     && B.type === "manifold") ||
-        (A.type === "manifold" && B.type === "manifold") ||
-        (A.type === "manifold" && B.type === "valve")    ||
-        (A.type === "valve"    && B.type === "tank");
-
-      if (!allowed) continue;
-
-      // Marcamos el edge como activo
-      active.add(key(u, v));
-
-      // Propagamos salvo que la válvula esté cerrada
-      const valveClosed = B.type === "valve" && B.state === "closed";
-      if (!valveClosed && !seen.has(v)) { seen.add(v); queue.push(v); }
+      if (A.type === "tank" && B.type === "pump" && isPumpAvailable(B)) active.add(key(a, b));
     }
-  }
 
-  return active;
-}, [edges, nodesWithPresence]);
+    // 2) BFS desde bombas disponibles
+    const out = new Map<string, string[]>();
+    for (const { a, b } of edges) (out.get(a) || out.set(a, []).get(a)).push(b);
 
+    const queue: string[] = nodesWithPresence.filter(isPumpAvailable).map(n => n.id);
+    const seen = new Set(queue);
 
+    while (queue.length) {
+      const u = queue.shift()!;
+      const nexts = out.get(u) || [];
+      for (const v of nexts) {
+        const A = byId[u], B = byId[v];
+        if (!A || !B) continue;
+        if (!isOpenValve(A) || !isOpenValve(B)) continue;
+
+        const allowed =
+          (A.type === "pump"     && B.type === "manifold") ||
+          (A.type === "manifold" && B.type === "manifold") ||
+          (A.type === "manifold" && B.type === "valve")    ||
+          (A.type === "valve"    && B.type === "tank");
+        if (!allowed) continue;
+
+        active.add(key(u, v));
+
+        const valveClosed = B.type === "valve" && B.state === "closed";
+        if (!valveClosed && !seen.has(v)) { seen.add(v); queue.push(v); }
+      }
+    }
+
+    return active;
+  }, [edges, nodesWithPresence]);
 
   // --------------------------
-  // Overlay draggable por nodo (con autosave)
+  // Overlay draggable por nodo
   // --------------------------
   const DraggableOverlay: React.FC<{ id: string }> = ({ id }) => {
     const n = byId[id];
@@ -603,7 +412,6 @@ const activeEdgeKeys = React.useMemo(() => {
       onEnd: () => {
         const node = byId[id];
         if (node && Number.isFinite(node.x) && Number.isFinite(node.y)) {
-          // persistimos local y backend
           saveLayoutToStorage();
           saveNodePosToBackend(id, node.x, node.y);
         }
@@ -657,13 +465,6 @@ const activeEdgeKeys = React.useMemo(() => {
       localStorage.setItem("infra_layout", JSON.stringify(data));
     } catch {}
   }
-  function loadLayoutFromStorage(): Array<{ id: string; x: number; y: number }> | null {
-    try {
-      const raw = localStorage.getItem("infra_layout");
-      if (!raw) return null;
-      return JSON.parse(raw);
-    } catch { return null; }
-  }
   function exportLayout() {
     return nodes.map(n => ({ id: n.id, x: n.x, y: n.y }));
   }
@@ -704,124 +505,6 @@ const activeEdgeKeys = React.useMemo(() => {
   }
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
-  // --------------------------
-  // Agrupaciones por ubicación (desde backend)
-  // --------------------------
-  const [locGroups, setLocGroups] = useState<Array<{ label: string; ids: string[] }>>([]);
-  const [groupsLoading, setGroupsLoading] = useState(false);
-  const [groupsError, setGroupsError] = useState<string | null>(null);
-
- useEffect(() => {
-  const API = getInfraBase();
-  setGroupsLoading(true);
-  let cancelled = false;
-
-  // normalizador para nombres/códigos
-  const norm = (s:any) => (s==null?'':String(s))
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // saca acentos
-    .toUpperCase().trim();
-
-  (async () => {
-    try {
-      // ============================================
-      // 1) ÍNDICES DE NODOS (REEMPLAZA TU BLOQUE AQUÍ)
-      // ids del grafo vienen como "type_assetId" (p.ej. tank_6)
-      // ============================================
-      const idByTypedUnd = new Map<string, string>();  // "type_assetId" → node.id
-      const idByTypedCol = new Map<string, string>();  // "type:assetId"  → node.id (por si aparece a futuro)
-      const idByCode     = new Map<string, string>();  // CODE → node.id (si algún nodo trae code)
-
-      for (const n of nodes) {
-        const nid  = String((n as any).id ?? '');
-        let type   = String((n as any).type ?? '').toLowerCase();
-        let code   = (n as any).code as (string | undefined);
-        let assetId: number | null =
-          Number.isFinite((n as any).asset_id) ? Number((n as any).asset_id) :
-          Number.isFinite((n as any).assetId)  ? Number((n as any).assetId)  : null;
-
-        // parsear el id: "type_assetId" o "type:code"
-        const mUnd = nid.match(/^([^:_]+)_(\d+)$/);
-        const mCol = nid.match(/^([^:_]+):(.+)$/);
-
-        if (mUnd) {
-          if (!type) type = mUnd[1].toLowerCase();
-          if (assetId == null) assetId = Number(mUnd[2]);
-        } else if (mCol) {
-          if (!type) type = mCol[1].toLowerCase();
-          if (!code) code = mCol[2];
-        }
-
-        if (type && assetId != null) {
-          idByTypedUnd.set(`${type}_${assetId}`, nid);
-          idByTypedCol.set(`${type}:${assetId}`, nid);
-        }
-        if (code) idByCode.set(norm(code), nid);
-      }
-
-      // sinonimias por si backend trae otro nombre de tipo
-      const typeAlias: Record<string, string> = {
-        tanque: 'tank',
-        bomba: 'pump',
-        válvula: 'valve',
-        valvula: 'valve',
-        colectora: 'manifold',
-      };
-
-      const locs = await fetchJSON<InfraLocation[]>(`${API}/locations`);
-      const groups: Array<{ label: string; ids: string[] }> = [];
-
-      for (const loc of locs) {
-        const packs = await fetchJSON<InfraAssetGroup[]>(`${API}/locations/${loc.id}/assets`);
-        const ids = new Set<string>();
-
-        for (const g of packs) {
-          const t = (typeAlias[g.type?.toLowerCase?.()] ?? g.type ?? '').toLowerCase();
-
-          for (const a of (g.items ?? [])) {
-            const codeKey = norm(a.code ?? a.name ?? '');
-
-            // ============================================
-            // 2) MATCH DEL ASSET → nodeId (REEMPLAZA AQUÍ)
-            // probamos type_assetId, luego type:assetId, luego code/nombre
-            // ============================================
-            const nodeId =
-              idByTypedUnd.get(`${t}_${a.id}`) ||
-              idByTypedCol.get(`${t}:${a.id}`) ||
-              (codeKey && idByCode.get(codeKey)) ||
-              null;
-
-            if (nodeId && byId[nodeId]) {
-              ids.add(nodeId);
-            } else {
-              console.warn('SIN MATCH', { want: [`${t}_${a.id}`, `${t}:${a.id}`, codeKey], item: a, type: t });
-            }
-          }
-        }
-
-        if (ids.size > 0) groups.push({ label: loc.name, ids: Array.from(ids) });
-      }
-
-      if (!cancelled) {
-        setLocGroups(groups);
-        setGroupsError(null);
-      }
-    } catch (err: any) {
-      if (!cancelled) {
-        console.error('[GROUP] error', err);
-        setGroupsError(String(err?.message || err));
-        setLocGroups([]);
-      }
-    } finally {
-      if (!cancelled) setGroupsLoading(false);
-    }
-  })();
-
-  return () => { cancelled = true; };
-}, [nodes, byId, configTick]);
-
-
-
-
   return (
     <div className="w-full bg-slate-50">
       <style>{`
@@ -842,8 +525,13 @@ const activeEdgeKeys = React.useMemo(() => {
             </Button>
             <Button variant="outline" onClick={resetAuto} title="Auto layout">Auto</Button>
             <Button variant="outline" onClick={doExportJSON} title="Exportar layout">Exportar</Button>
-            <input ref={importInputRef} type="file" accept="application/json" className="hidden"
-                   onChange={(e) => { const f = e.target.files?.[0]; if (f) doImportJSON(f); e.currentTarget.value = ""; }} />
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json"
+              className="hidden"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) doImportJSON(f); e.currentTarget.value = ""; }}
+            />
             <Button variant="outline" onClick={() => importInputRef.current?.click()} title="Importar layout">Importar</Button>
           </div>
         </div>
@@ -889,17 +577,6 @@ const activeEdgeKeys = React.useMemo(() => {
                 onAuxClick={preventMiddleAux}
               />
 
-              {/* Agrupaciones automáticas desde backend */}
-              {locGroups.map((g) => (
-                <AutoGroupBox key={g.label} ids={g.ids} label={g.label} byId={byId} pad={102} />
-              ))}
-              {groupsLoading && (
-                <g><text x={vb.x + 12} y={vb.y + 24} className="fill-slate-400 text-[12px]">Cargando agrupaciones…</text></g>
-              )}
-              {groupsError && (
-                <g><text x={vb.x + 12} y={vb.y + 24} className="fill-red-500 text-[12px]">Error agrupaciones: {groupsError}</text></g>
-              )}
-
               {/* Edges debajo */}
               {edges.map((e) => {
                 const A = byId[e.a]; const B = byId[e.b];
@@ -913,7 +590,7 @@ const activeEdgeKeys = React.useMemo(() => {
 
                 return (
                   <Edge
-                    key={`${e.a}-${e.b}-${tick}`}
+                    key={`${e.a}>${e.b}`}  // key estable
                     {...e}
                     active={active}
                   />
@@ -946,10 +623,3 @@ const activeEdgeKeys = React.useMemo(() => {
     </div>
   );
 }
-
-/* ============================
-   Tipos para infra backend (agrupaciones)
-   ============================ */
-type InfraLocation = { id: number; code: string; name: string };
-type InfraAssetItem = { id: number; name?: string; code?: string };
-type InfraAssetGroup = { type: "tank" | "pump" | "valve" | "manifold"; items: InfraAssetItem[] };

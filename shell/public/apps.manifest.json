@@ -1,6 +1,0 @@
-[
-  { "name": "kpi", "type": "iframe", "url": "http://localhost:5180/", "mount": "#kpi-root" },
-   { "name": "infra", "type": "iframe", "url": "http://127.0.0.1:5181/", "mount": "#infra-root" }
-]
-
-

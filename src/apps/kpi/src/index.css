@@ -1,14 +1,25 @@
 @import "tailwindcss";
 
-:root {
-  --radius: 12px;
+/* base normal */
+@layer base {
+  html { height: 100%; scroll-behavior: smooth; }
+  body { min-height: 100%; /* padding general si querés: */ padding: 2rem; }
+  #root { min-height: 100%; }
 }
 
-html, body, #root {
-  height: 100%;
+/* cuando está embebido: sin scroll ni padding propio */
+html.is-embedded,
+html.is-embedded body {
+  height: auto !important;
+  overflow: hidden !important;
 }
 
-body {
-  /* lo mismo que antes, pero funciona igual en v4 */
-  @apply bg-gray-50 text-gray-900;
+html.is-embedded body {
+  padding: 0 !important;     /* anula el padding general cuando está embebido */
+  margin: 0 !important;
+}
+
+html.is-embedded #root {
+  height: auto !important;
+  overflow: visible !important;
 }

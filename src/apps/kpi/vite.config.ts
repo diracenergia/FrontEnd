@@ -1,54 +1,75 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+// vite.config.ts (KPI embebido)
+import { defineConfig, loadEnv } from 'vite'
+import react from '@vitejs/plugin-react'
+import { fileURLToPath, URL } from 'node:url'
 
-const API_URL = process.env.VITE_API_URL || "http://127.0.0.1:8000/infra";
-const API_KEY = process.env.VITE_API_KEY || "";
-const AUTH_IN_QUERY = String(process.env.VITE_AUTH_IN_QUERY || "false") === "true";
-const ORG_ID = process.env.VITE_ORG_ID || "";
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const isProd = mode === 'production'
 
-export default defineConfig({
-  resolve: { alias: { "@": "/src" } },
-  plugins: [react()],
-  server: {
-    port: 5180,
-    strictPort: true,                   // ← si 5180 está ocupado, falla en lugar de cambiar de puerto
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      // por las dudas, evitar bloqueos de framing en dev:
-      "X-Frame-Options": "ALLOWALL",
-      "Content-Security-Policy": "frame-ancestors *"
+  // ✅ KPI en puerto propio por defecto (evita choque con shell en 5173)
+  const DEV_HOST = env.VITE_HOST || '127.0.0.1'
+  const DEV_PORT = Number(env.VITE_PORT) || 5174
+  const PREV_PORT = Number(env.VITE_PREVIEW_PORT) || 4174
+
+  // ✅ Allowlist de padres para <iframe>. Podés sobreescribirlo por env:
+  // VITE_FRAME_ANCESTORS="http://127.0.0.1:5173 http://localhost:5173"
+  const FRAME_ANCESTORS =
+    env.VITE_FRAME_ANCESTORS ||
+    'http://127.0.0.1:5173 http://localhost:5173'
+
+  return {
+    base: '/',
+    plugins: [react()],
+
+    resolve: {
+      alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+      dedupe: ['react', 'react-dom'],
     },
-    proxy: {
-      "/api": {
-        target: API_URL,
-        changeOrigin: true,
-        secure: false,
-        configure: (proxy) => {
-          proxy.on("proxyReq", (proxyReq) => {
-            if (AUTH_IN_QUERY && API_KEY) {
-              const url = new URL(proxyReq.path, "http://dummy");
-              if (!url.searchParams.has("key")) url.searchParams.set("key", API_KEY);
-              proxyReq.path = url.pathname + url.search;
-            }
-            const u2 = new URL(proxyReq.path, "http://dummy");
-            if (ORG_ID && !u2.searchParams.has("org_id")) {
-              u2.searchParams.set("org_id", ORG_ID);
-              proxyReq.path = u2.pathname + u2.search;
-            }
-          });
-        },
-        rewrite: (path) => path.replace(/^\/api/, ""),
+
+    server: {
+      host: DEV_HOST,
+      port: DEV_PORT,
+      strictPort: true,   // ❌ no “autoshift”
+      open: false,
+      cors: true,
+      headers: {
+        // CORS para cargar assets/remotos desde el shell
+        'Access-Control-Allow-Origin': '*',
+        // ❗ NO usar X-Frame-Options (ALLOWALL no existe). Usamos CSP:
+        // Permitimos que el shell (5173) lo embeba. Sumá orígenes si hace falta.
+        'Content-Security-Policy': `frame-ancestors ${FRAME_ANCESTORS}`,
+        // (opcional) si servís fuentes/imagenes cross-origin:
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+      },
+      // HMR fijado al mismo origin/puerto (evita ws raros en iframes)
+      hmr: {
+        host: DEV_HOST,
+        port: DEV_PORT,
+        protocol: 'ws',
       },
     },
-  },
-  preview: { port: 5180 },
-  build: {
-    lib: {
-      entry: "src/widget.tsx",
-      name: "KpiWidget",
-      fileName: (format) => `kpi-widget.${format}.js`,
-      formats: ["es", "umd"],
+
+    preview: {
+      host: DEV_HOST,
+      port: PREV_PORT,
+      strictPort: true,
+      cors: true,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Security-Policy': `frame-ancestors ${FRAME_ANCESTORS}`,
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+      },
     },
-    rollupOptions: { external: [], output: { globals: {} } },
-  },
-});
+
+    build: {
+      outDir: 'dist',
+      target: 'esnext',
+      sourcemap: !isProd,
+    },
+
+    define: {
+      __APP_VERSION__: JSON.stringify(env.VITE_APP_VERSION || 'dev'),
+    },
+  }
+})

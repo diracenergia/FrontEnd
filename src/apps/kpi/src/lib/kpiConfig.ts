@@ -1,55 +1,91 @@
-/**
- * Config común para API KPI (compat X-Org-Id y x_org_id)
- */
-const API_BASE_RAW = (import.meta.env.VITE_API_BASE ?? "https://backend-v85n.onrender.com").toString().trim();
-export const API_BASE = API_BASE_RAW.replace(/\/$/, "");
+// src/lib/kpiConfig.ts
+type AnyObj = Record<string, any>;
 
-const ORG_ID_RAW = (import.meta.env.VITE_ORG_ID ?? "").toString().trim();
-export const ORG_ID = Number(ORG_ID_RAW);
+export type KpiCtx = {
+  orgId: number;
+  apiBase: string;
+  apiKey?: string;
+  authInQuery?: boolean;
+};
 
-export const DEFAULT_LOCATION_ID = (() => {
-  const raw = (import.meta.env.VITE_LOCATION_ID ?? "").toString().trim();
-  return raw ? Number(raw) : undefined;
-})();
+function resolveKpiCtx(): KpiCtx {
+  const w = window as any;
+  const fromWin = (w.__KPI_CTX__ || w.__APP_CTX__ || {}) as Partial<KpiCtx>;
+  const env: any = (import.meta as any)?.env ?? {};
 
-// Fallar temprano si falta ORG_ID
-if (!Number.isFinite(ORG_ID) || ORG_ID <= 0) {
-  console.error("[KPI] VITE_ORG_ID inválido o vacío. Definí VITE_ORG_ID en tu .env");
-  throw new Error("VITE_ORG_ID inválido o vacío. Definí VITE_ORG_ID en tu .env");
+  const apiBase = String(fromWin.apiBase || env.VITE_API_URL || env.VITE_API_BASE || "").replace(/\/+$/,"");
+  const orgId = Number(fromWin.orgId || env.VITE_ORG_ID || 0) || 1;
+  const apiKey = fromWin.apiKey || env.VITE_API_KEY || undefined;
+  const authInQuery = Boolean(fromWin.authInQuery ?? (env.VITE_AUTH_IN_QUERY === "1"));
+
+  if (!apiBase) {
+    throw new Error("[KPI] apiBase vacío: esperá EMBED_INIT o definí VITE_API_URL");
+  }
+  return { orgId, apiBase, apiKey, authInQuery };
 }
 
-export function buildUrl(path: string, params?: Record<string, any>) {
-  const url = new URL(`${API_BASE}${path}`);
+// 👇 Coerción robusta para query params (evita [object Object])
+function toParamString(key: string, v: any): string | null {
+  if (v == null) return null;
+
+  // Soportar números y booleanos
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : null;
+  if (typeof v === "boolean") return v ? "1" : "0";
+
+  // Strings válidos
+  if (typeof v === "string") return v;
+
+  // Objetos comunes de selects: {id}, {value}
+  if (typeof v === "object") {
+    if ("id" in v) return toParamString(key, (v as any).id);
+    if ("value" in v) return toParamString(key, (v as any).value);
+    return null;
+  }
+
+  return null;
+}
+
+export function buildUrl(
+  path: string,
+  params?: Record<string, string | number | boolean | undefined | null | any>
+) {
+  const { apiBase, orgId, authInQuery } = resolveKpiCtx();
+  const clean = path.startsWith("/") ? path : `/${path}`;
+  const url = new URL(clean, apiBase);
+
+  if (authInQuery && !url.searchParams.has("org_id")) {
+    url.searchParams.set("org_id", String(orgId));
+  }
+
   if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && v !== "" && v !== false) {
-        url.searchParams.set(k, String(v));
+    for (const [k, raw] of Object.entries(params)) {
+      if (raw === undefined || raw === null) continue;
+
+      // Arrays → repetir clave
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          const sv = toParamString(k, item);
+          if (sv != null) url.searchParams.append(k, sv);
+        }
+        continue;
+      }
+
+      const sv = toParamString(k, raw);
+      if (sv != null) {
+        url.searchParams.set(k, sv);
+      } else {
+        console.warn(`[KPI] parámetro descartado (no serializable): ${k}=`, raw);
       }
     }
   }
   return url.toString();
 }
 
-export function kpiHeaders(extra?: HeadersInit): HeadersInit {
-  // 👇 Mandamos ambas variantes para cubrir convert_underscores=False del backend
-  const base: Record<string, string> = {
-    "X-Org-Id": String(ORG_ID),
-    "x_org_id": String(ORG_ID),
+export function defaultHeaders(): HeadersInit {
+  const { orgId, apiKey } = resolveKpiCtx();
+  return {
+    "Content-Type": "application/json",
+    "X-Org-Id": String(orgId),
+    ...(apiKey ? { "x-api-key": String(apiKey) } : {}),
   };
-  return { ...(extra as any), ...base };
-}
-
-export async function getJSON<T>(path: string, params?: Record<string, any>, init?: RequestInit) {
-  const url = buildUrl(path, params);
-  const headers = { ...(init?.headers || {}), ...kpiHeaders() };
-
-  console.info("[KPI][GET]", url, headers);
-
-  const res = await fetch(url, { ...init, headers });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    console.error("[KPI][ERR]", res.status, res.statusText, url, txt);
-    throw new Error(`[${res.status} ${res.statusText}] ${url}\n${txt}`);
-  }
-  return (await res.json()) as T;
 }

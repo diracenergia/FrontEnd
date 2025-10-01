@@ -1,32 +1,98 @@
 // src/data/loadDashboard.ts
 import { MOCK_DATA } from "./mock";
 
+/**
+ * Resolución de contexto KPI en runtime:
+ * prioridad: overrides -> window.__KPI_CTX__ -> window.__APP_CTX__ -> ?org= -> VITE_*
+ */
 type AnyObj = Record<string, any>;
 
-const API_BASE = (import.meta.env.VITE_API_BASE ?? "").toString().trim();
-const ORG_ID = (import.meta.env.VITE_ORG_ID ?? "").toString().trim();
-const SEND_ORG_AS_QUERY = false;
+export type KpiCtx = {
+  orgId: number;
+  apiBase: string;
+  apiKey?: string;
+  authInQuery?: boolean;
+  wsBase?: string;
+};
 
+declare global {
+  interface Window {
+    __APP_CTX__?: Partial<KpiCtx>;
+    __KPI_CTX__?: Partial<KpiCtx>;
+  }
+}
+
+function resolveCtx(overrides?: Partial<KpiCtx>): KpiCtx {
+  const env: any = (import.meta as any)?.env ?? {};
+  const q = new URLSearchParams(typeof location !== "undefined" ? location.search : "");
+  const win: any = (typeof window !== "undefined" ? window : {}) as any;
+
+  const orgCandidates = [
+    overrides?.orgId,
+    win.__KPI_CTX__?.orgId,
+    win.__APP_CTX__?.orgId,
+    Number(q.get("org")),
+    Number(env.VITE_ORG_ID),
+  ].filter((v) => Number.isFinite(v) && (v as number) > 0) as number[];
+
+  const orgId = orgCandidates[0] || 1; // fallback dev seguro
+
+  // Acepta VITE_API_BASE o VITE_API_URL
+  const apiBase = (
+    overrides?.apiBase ??
+    win.__KPI_CTX__?.apiBase ??
+    win.__APP_CTX__?.apiBase ??
+    env.VITE_API_BASE ??
+    env.VITE_API_URL ??
+    ""
+  )
+    .toString()
+    .trim()
+    .replace(/\/$/, "");
+
+  const apiKey =
+    overrides?.apiKey ?? win.__KPI_CTX__?.apiKey ?? win.__APP_CTX__?.apiKey ?? env.VITE_API_KEY ?? undefined;
+
+  const authInQuery = Boolean(
+    overrides?.authInQuery ??
+      win.__KPI_CTX__?.authInQuery ??
+      win.__APP_CTX__?.authInQuery ??
+      (env.VITE_AUTH_IN_QUERY === "1")
+  );
+
+  const ctx: KpiCtx = { orgId, apiBase, apiKey: apiKey ? String(apiKey) : undefined, authInQuery };
+
+  // Persistimos para lecturas futuras
+  win.__KPI_CTX__ = { ...win.__KPI_CTX__, ...ctx };
+  if (!apiBase) console.warn("[KPI] apiBase vacío; pasá ctx.apiBase o VITE_API_BASE/VITE_API_URL.");
+  return ctx;
+}
+
+// ======================
+// Config y utilitarios
+// ======================
 const DEBUG = true;
+const SEND_ORG_AS_QUERY = false; // si tu backend lo necesita por query, ponelo en true
+const ctx = resolveCtx();
 
 function buildUrl(
   path: string,
   params?: Record<string, string | number | boolean | undefined | null>
 ) {
-  if (!API_BASE) throw new Error("VITE_API_BASE no configurado");
+  if (!ctx.apiBase) throw new Error("API base no configurada (ctx.apiBase / VITE_API_BASE/VITE_API_URL)");
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  const url = new URL(cleanPath, API_BASE);
+  const url = new URL(cleanPath, ctx.apiBase);
 
   if (SEND_ORG_AS_QUERY) {
-    const org = (ORG_ID || "1").trim();
-    if (org && !url.searchParams.has("org_id")) {
-      url.searchParams.set("org_id", org);
+    // Algunos backends aceptan org como query (además del header)
+    if (!url.searchParams.has("org") && !url.searchParams.has("org_id")) {
+      url.searchParams.set("org", String(ctx.orgId));
     }
   }
 
   if (params) {
     for (const [k, v] of Object.entries(params)) {
-      if (v === undefined || v === null) continue;
+      if (v === undefined || v === null || v === "") continue;
       url.searchParams.set(k, String(v));
     }
   }
@@ -40,10 +106,13 @@ async function getJSON<T = AnyObj>(
 ): Promise<T | null> {
   const url = buildUrl(path, params);
   const headers: HeadersInit = {
+    "Accept": "application/json",
     "Content-Type": "application/json",
-    "X-Org-Id": (ORG_ID || "1").trim(),
+    "X-Org-Id": String(ctx.orgId),  // kebab-case
+    "x_org_id": String(ctx.orgId),  // underscore (compat)
     ...(init?.headers ?? {}),
   };
+  if (ctx.apiKey) (headers as any)["x-api-key"] = String(ctx.apiKey);
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), 15000);
@@ -89,11 +158,14 @@ async function getJSON<T = AnyObj>(
   }
 }
 
+// ======================
+// Tipos y carga de KPI
+// ======================
 export type DashboardData = {
   overview?: AnyObj;      // /kpi/overview  (incluye assets, latest, timeseries, alarms, analytics30d, topology)
   locations?: AnyObj[];   // /kpi/locations
   byLocation?: AnyObj[];  // /kpi/by-location
-  // Campos legacy para compatibilidad con MOCK_DATA (no se pueblan desde el backend):
+  // Legacy (compat MOCK_DATA):
   org?: AnyObj;
   kpis?: AnyObj;
   assets?: AnyObj[];
@@ -111,8 +183,9 @@ function logOpt(path: string, e: any) {
 export async function loadDashboard(): Promise<DashboardData> {
   const result: DashboardData = { ...MOCK_DATA };
 
-  const DEFAULT_LOC_ID = Number(import.meta.env.VITE_LOCATION_ID ?? 1) || 1;
-  const DEFAULT_WINDOW = (import.meta.env.VITE_KPI_WINDOW ?? "7d").toString();
+  const env: any = (import.meta as any)?.env ?? {};
+  const DEFAULT_LOC_ID = Number(env.VITE_LOCATION_ID ?? 1) || 1;
+  const DEFAULT_WINDOW = (env.VITE_KPI_WINDOW ?? "7d").toString();
 
   // 1) overview (principal)
   await getJSON("/kpi/overview", { loc_id: DEFAULT_LOC_ID, window: DEFAULT_WINDOW })

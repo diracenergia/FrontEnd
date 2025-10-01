@@ -1,15 +1,25 @@
-export type PresenceItem = {
-  node_id: string;                 // debe coincidir con n.id
-  online: boolean;
-  tone: "ok" | "warn" | "bad";
-  age_sec?: number | null;
-  last_seen?: string | null;
-};
+// src/lib/presence.ts
+import { getBaseUrl, apiHeaders } from './config';
 
-export async function fetchPresenceSimple(apiRoot: string): Promise<PresenceItem[]> {
-  const url = `${apiRoot.replace(/\/$/, "")}/conn/simple`;
-  const r = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
-  const j = await r.json();
-  return (j.presence ?? []) as PresenceItem[];
+export type PresenceSimple = { id: string; ts?: string; info?: any };
+
+export async function fetchPresenceSimple(): Promise<PresenceSimple[]> {
+  const b = getBaseUrl();
+  try {
+    const r = await fetch(`${b}/conn/simple`, { headers: apiHeaders() });
+    if (!r.ok) {
+      if (r.status === 404) {
+        // No existe en tu backend → no spamear la consola
+        return [];
+      }
+      return [];
+    }
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) return [];
+    const data = await r.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    // Si el backend no responde, devolvemos vacío
+    return [];
+  }
 }
