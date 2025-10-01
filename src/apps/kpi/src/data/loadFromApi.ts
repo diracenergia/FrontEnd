@@ -38,14 +38,17 @@ function normalize24h(
 }
 
 export async function loadDashboard(location_id?: number | "all") {
+  // 🔧 normalizamos el parámetro: número o undefined (sin objetos { location_id })
+  const locParam = (location_id === "all" || location_id == null) ? undefined : Number(location_id);
+
   const [locations, totals, uptime, alarms, buckets, pumps, tanks] = await Promise.all([
     fetchLocations(),
-    fetchTotalsByLocation({ location_id }),
-    fetchUptime30dByLocation({ location_id }),
-    fetchActiveAlarms({ location_id }),
+    fetchTotalsByLocation(locParam),             // ← antes: fetchTotalsByLocation({ location_id })
+    fetchUptime30dByLocation(locParam),         // ← antes: fetchUptime30dByLocation({ location_id })
+    fetchActiveAlarms(locParam),                // ← antes: fetchActiveAlarms({ location_id })
     fetchTimeBuckets24h(),
-    fetchPumpsActivity24h({ location_id }),
-    fetchTankLevelAvg24hByLocation({ location_id }),
+    fetchPumpsActivity24h(locParam),            // ← antes: fetchPumpsActivity24h({ location_id })
+    fetchTankLevelAvg24hByLocation(locParam),   // ← antes: fetchTankLevelAvg24hByLocation({ location_id })
   ]);
 
   // tabla por ubicación + uptime
