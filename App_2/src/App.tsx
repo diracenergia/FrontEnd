@@ -188,8 +188,13 @@ function TankNodeView({
   const innerH = H - 2 * P;
 
   const isOnline = n.online === true;
-  const alarma = (n.alarma || "").toLowerCase();
-  const stroke = alarma === "critico" ? "#ef4444" : "#3b82f6";
+  const alarmaRaw = (n.alarma || "").toLowerCase();
+  const isCritical = ["critico", "crítico", "critical"].includes(alarmaRaw);
+  const isWarning  = ["alerta", "warning", "warn"].includes(alarmaRaw);
+
+  // Borde del tanque según alarma
+  const stroke = isCritical ? "#ef4444" : isWarning ? "#f59e0b" : "#3b82f6";
+
   const levelRaw = typeof n.level_pct === "number" ? n.level_pct : toNumber(n.level_pct);
   const level = Math.max(0, Math.min(100, levelRaw ?? 0));
   const levelY = P + innerH - (level / 100) * innerH;
@@ -201,6 +206,28 @@ function TankNodeView({
     `Nivel: ${levelRaw != null ? `${level}%` : "—"}`,
     `Alarma: ${n.alarma ?? "—"}`,
   ];
+
+  // Componente auxiliar para el halo pulsante
+  const Pulse = ({ color }: { color: string }) => (
+    <g filter="url(#glow)">
+      {/* marco exterior un poquito más grande */}
+      <rect
+        x={-6}
+        y={-6}
+        width={W + 12}
+        height={H + 12}
+        rx={22}
+        ry={22}
+        fill="none"
+        stroke={color}
+        strokeWidth={3}
+        opacity={0.6}
+      >
+        <animate attributeName="stroke-width" values="2;6;2" dur="1.6s" repeatCount="indefinite" />
+        <animate attributeName="opacity" values="0.15;0.75;0.15" dur="1.6s" repeatCount="indefinite" />
+      </rect>
+    </g>
+  );
 
   return (
     <g
@@ -215,25 +242,33 @@ function TankNodeView({
       style={{ cursor: "move" }}
       opacity={groupOpacity}
     >
+      {/* halo pulsante según estado */}
+      {isCritical && <Pulse color="#ef4444" />}
+      {!isCritical && isWarning && <Pulse color="#f59e0b" />}
+
       <defs>
         <clipPath id={clipId}>
           <rect x={P} y={P} width={innerW} height={innerH} rx={12} ry={12} />
         </clipPath>
       </defs>
 
+      {/* cuerpo del tanque */}
       <rect width={W} height={H} rx={16} ry={16} fill="url(#lgTank)" stroke={stroke} strokeWidth={2.2} />
 
+      {/* marcas laterales */}
       {Array.from({ length: 5 }).map((_, i) => {
         const yy = P + (i * innerH) / 4;
         return <line key={i} x1={W - P + 2} y1={yy} x2={W - P + 8} y2={yy} stroke="#cbd5e1" strokeWidth={1} />;
       })}
 
+      {/* “agua” y brillo */}
       <g clipPath={`url(#${clipId})`}>
         <rect x={P} y={levelY} width={innerW} height={P + innerH - levelY} fill="url(#lgWaterDeep)" />
         <line x1={P} y1={levelY} x2={P + innerW} y2={levelY} stroke="#60a5fa" strokeWidth={1.5} />
         <rect x={P} y={P} width={innerW} height={innerH / 2.4} fill="url(#lgGlass)" opacity={0.18} />
       </g>
 
+      {/* etiquetas del tanque (estas sí quedan) */}
       <text x={W / 2} y={20} textAnchor="middle" fontSize={13} className="node-label">
         {n.name}
       </text>
@@ -241,7 +276,8 @@ function TankNodeView({
         {n.alarma ?? "sin alarma"}
       </text>
 
-      {alarma === "critico" && (
+      {/* badge chico de crítico (opcional, lo mantengo) */}
+      {isCritical && (
         <g transform={`translate(${W - 18}, ${18})`}>
           <rect x={-14} y={-8} width={28} height={16} rx={8} fill="#fee2e2" stroke="#ef4444" />
           <circle r={3} fill="#ef4444" />
@@ -250,6 +286,7 @@ function TankNodeView({
     </g>
   );
 }
+
 
 function PumpNodeView({
   n,
@@ -364,9 +401,7 @@ function ManifoldNodeView({
       style={{ cursor: "move" }}
     >
       <rect width={w} height={h} rx={8} ry={8} fill="url(#lgSteel)" stroke="#475569" strokeWidth={2} />
-      <text x={w / 2} y={-6} textAnchor="middle" className="node-subtle">
-        {n.name} (colector)
-      </text>
+      {/* etiqueta de manifold removida */}
     </g>
   );
 }
@@ -404,9 +439,7 @@ function ValveNodeView({
       <polygon points={`0,-${s / 2} ${s / 2},0 0,${s / 2} -${s / 2},0`} fill="#fff7ed" stroke="#f97316" strokeWidth={2} />
       <line x1="-14" y1="0" x2="14" y2="0" stroke="#f97316" strokeWidth={2} />
       <circle r="2" fill="#f97316" />
-      <text y={s + 12} textAnchor="middle" className="node-subtle">
-        {n.name} (válvula)
-      </text>
+      {/* etiqueta de válvula removida */}
     </g>
   );
 }
