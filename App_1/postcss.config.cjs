@@ -1,7 +1,6 @@
-// Scada/App_1/postcss.config.cjs
+// Tailwind v4: no hace falta autoprefixer
 module.exports = {
   plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
-  },
+    "@tailwindcss/postcss": {}
+  }
 };
