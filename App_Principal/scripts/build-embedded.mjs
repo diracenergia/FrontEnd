@@ -11,11 +11,7 @@ const run = (cmd, cwd) => {
   execSync(cmd, { stdio: "inherit", cwd });
 };
 
-/**
- * Workaround para optional deps de Rollup entre Windows/Linux:
- * - Borramos package-lock y node_modules de la app embebida
- * - Hacemos npm install (no 'ci') para resolver binarios nativos del SO actual
- */
+// Workaround cross-plataforma para optional deps (rollup) en embebidas
 const cleanInstall = (dir) => {
   try { rmSync(`${dir}/node_modules`, { recursive: true, force: true }); } catch {}
   try { rmSync(`${dir}/package-lock.json`, { force: true }); } catch {}
@@ -35,3 +31,13 @@ if (!existsSync(`${root}/public/infraestructura`)) mkdirSync(`${root}/public/inf
 cpSync(`${app2}/dist`, `${root}/public/infraestructura`, { recursive: true });
 
 console.log("\n✅ Embebidas copiadas a /public (kpi/ e infraestructura/)");
+
+// ==== Workaround rollup para la App_Principal (root) ====
+// Tras el `npm ci` de Vercel, ejecutamos un `npm install` en Linux
+// para que se instalen los binarios @rollup/rollup-linux-* opcionales.
+try {
+  run("npm install --no-audit --no-fund", root);
+  console.log("\n✅ Root npm install ejecutado (fix rollup optional deps)");
+} catch (e) {
+  console.warn("⚠️ Root npm install falló (seguimos igual):", e?.message || e);
+}
