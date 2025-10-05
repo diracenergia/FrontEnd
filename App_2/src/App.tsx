@@ -8,35 +8,9 @@ import {
 } from "@/layout/layoutIO";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 
-// ==============================
-// Configuración de API
-// ==============================
-const API_BASE =
-  (import.meta as any)?.env?.VITE_API_BASE?.replace(/\/+$/, "") ||
-  "https://backend-v85n.onrender.com";
-
-async function fetchJSON<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`);
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} ${res.statusText} - ${txt}`);
-  }
-  return res.json();
-}
-
-/** POST para actualizar coordenadas de un nodo */
-async function updateLayout(node_id: string, x: number, y: number) {
-  const res = await fetch(`${API_BASE}/infraestructura/update_layout`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ node_id, x, y }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`Update layout: HTTP ${res.status} ${res.statusText} - ${txt}`);
-  }
-  return res.json();
-}
+// 🟢 nuevo: polling a 1s desde TanStack Query
+import { useLiveQuery } from "@/lib/useLiveQuery";
+import { API_BASE } from "@/lib/api";
 
 // ==============================
 // Tipos backend
@@ -98,10 +72,12 @@ type UIEdge = {
 // Helpers layout
 // ==============================
 const isSet = (v?: number | null) => Number.isFinite(v) && Math.abs((v as number)) > 1;
-
-function numberOr<T extends number | null | undefined>(v: T, fb: number): number {
-  return isSet(v as number) ? (v as number) : fb;
-}
+const toNumber = (val: any): number | null => {
+  if (val === null || val === undefined) return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+};
+const numberOr = (v: number | null | undefined, fb: number): number => (isSet(v) ? (v as number) : fb);
 
 function layoutRow<T extends UINode>(
   nodes: T[],
@@ -120,12 +96,6 @@ function layoutRow<T extends UINode>(
 
 function nodesByIdAsArray(map: Record<string, UINode>) {
   return Object.values(map);
-}
-
-function toNumber(val: any): number | null {
-  if (val === null || val === undefined) return null;
-  const n = Number(val);
-  return Number.isFinite(n) ? n : null;
 }
 
 /** BBox para viewBox auto */
@@ -226,7 +196,6 @@ function TankNodeView({
   const groupOpacity = isOnline ? 1 : 0.55;
 
   const clipId = `clip-${n.id}`;
-
   const tipLines = [
     `Online: ${isOnline ? "Sí" : "No"}`,
     `Nivel: ${levelRaw != null ? `${level}%` : "—"}`,
@@ -443,20 +412,42 @@ function ValveNodeView({
 }
 
 // ==============================
+// API helpers con AbortSignal
+// ==============================
+async function fetchJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { signal });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status} ${res.statusText} - ${txt}`);
+  }
+  return res.json();
+}
+
+/** POST para actualizar coordenadas de un nodo */
+async function updateLayout(node_id: string, x: number, y: number) {
+  const res = await fetch(`${API_BASE}/infraestructura/update_layout`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ node_id, x, y }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Update layout: HTTP ${res.status} ${res.statusText} - ${txt}`);
+  }
+  return res.json();
+}
+
+// ==============================
 // App
 // ==============================
 export default function App() {
   const [nodes, setNodes] = useState<UINode[]>([]);
   const [edges, setEdges] = useState<UIEdge[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
   const [viewBoxStr, setViewBoxStr] = useState("0 0 1000 520");
 
   // Tooltip
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [tip, setTip] = useState<Tip | null>(null);
-
   const showTip = (e: React.MouseEvent, content: { title: string; lines: string[] }) => {
     const rect = wrapRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -469,72 +460,75 @@ export default function App() {
   };
   const hideTip = () => setTip(null);
 
+  // 🟢 consulta "viva" cada 1s (definida en QueryClient)
+  const { data, isFetching, error } = useLiveQuery(
+    ["infra", "layout"],
+    async (signal) => {
+      const [nodesRaw, edgesRaw] = await Promise.all([
+        fetchJSON<CombinedNodeDTO[]>("/infraestructura/get_layout_combined", signal),
+        fetchJSON<EdgeDTO[]>("/infraestructura/get_layout_edges", signal),
+      ]);
+      return { nodesRaw, edgesRaw };
+    },
+    // select: transformamos a UI lo mínimo posible
+    (raw) => raw
+  );
+
+  // transformar a UI + aplicar layout + merge con localStorage
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const [nodesRaw, edgesRaw] = await Promise.all([
-          fetchJSON<CombinedNodeDTO[]>("/infraestructura/get_layout_combined"),
-          fetchJSON<EdgeDTO[]>("/infraestructura/get_layout_edges"),
-        ]);
+    if (!data) return;
 
-        let uiNodes: UINode[] = (nodesRaw ?? []).map((n) => ({
-          id: n.node_id,
-          type: n.type,
-          name: `${n.type} ${n.id}`,
-          x: numberOr(n.x, 0),
-          y: numberOr(n.y, 0),
-          online: n.online ?? null,
-          state: n.state ?? null,
-          level_pct: toNumber(n.level_pct),
-          alarma: n.alarma ?? null,
-        })) as UINode[];
+    let uiNodes: UINode[] = (data.nodesRaw ?? []).map((n) => ({
+      id: n.node_id,
+      type: n.type,
+      name: `${n.type} ${n.id}`,
+      x: numberOr(n.x, 0),
+      y: numberOr(n.y, 0),
+      online: n.online ?? null,
+      state: n.state ?? null,
+      level_pct: toNumber(n.level_pct),
+      alarma: n.alarma ?? null,
+    })) as UINode[];
 
-        const pumps = uiNodes.filter((n) => n.type === "pump") as PumpNode[];
-        const tanks = uiNodes.filter((n) => n.type === "tank") as TankNode[];
-        const manifolds = uiNodes.filter((n) => n.type === "manifold") as ManifoldNode[];
-        const valves = uiNodes.filter((n) => n.type === "valve") as ValveNode[];
+    const pumps = uiNodes.filter((n) => n.type === "pump") as PumpNode[];
+    const tanks = uiNodes.filter((n) => n.type === "tank") as TankNode[];
+    const manifolds = uiNodes.filter((n) => n.type === "manifold") as ManifoldNode[];
+    const valves = uiNodes.filter((n) => n.type === "valve") as ValveNode[];
 
-        const pumpsFixed = layoutRow(pumps, { startX: 140, startY: 380, gapX: 160 });
-        const manifoldsFixed = layoutRow(manifolds, { startX: 480, startY: 260, gapX: 180 });
-        const valvesFixed = layoutRow(valves, { startX: 640, startY: 260, gapX: 180 });
-        const tanksFixed = layoutRow(tanks, { startX: 820, startY: 260, gapX: 180 });
+    const pumpsFixed = layoutRow(pumps, { startX: 140, startY: 380, gapX: 160 });
+    const manifoldsFixed = layoutRow(manifolds, { startX: 480, startY: 260, gapX: 180 });
+    const valvesFixed = layoutRow(valves, { startX: 640, startY: 260, gapX: 180 });
+    const tanksFixed = layoutRow(tanks, { startX: 820, startY: 260, gapX: 180 });
 
-        const fixedById: Record<string, UINode> = {};
-        [...pumpsFixed, ...manifoldsFixed, ...valvesFixed, ...tanksFixed].forEach((n) => {
-          fixedById[n.id] = n;
-        });
+    const fixedById: Record<string, UINode> = {};
+    [...pumpsFixed, ...manifoldsFixed, ...valvesFixed, ...tanksFixed].forEach((n) => {
+      fixedById[n.id] = n;
+    });
 
-        uiNodes = uiNodes.map((n) => {
-          const f = fixedById[n.id];
-          const x = isSet(n.x) ? n.x : f?.x ?? n.x;
-          const y = isSet(n.y) ? n.y : f?.y ?? n.y;
-          return { ...n, x, y } as UINode;
-        });
+    uiNodes = uiNodes.map((n) => {
+      const f = fixedById[n.id];
+      const x = isSet(n.x) ? n.x : f?.x ?? n.x;
+      const y = isSet(n.y) ? n.y : f?.y ?? n.y;
+      return { ...n, x, y } as UINode;
+    });
 
-        const uiEdges: UIEdge[] = (edgesRaw ?? []).map((e) => ({
-          a: e.src_node_id,
-          b: e.dst_node_id,
-          relacion: e.relacion,
-          prioridad: e.prioridad,
-        }));
+    const uiEdges: UIEdge[] = (data.edgesRaw ?? []).map((e) => ({
+      a: e.src_node_id,
+      b: e.dst_node_id,
+      relacion: e.relacion,
+      prioridad: e.prioridad,
+    }));
 
-        const saved = loadLayoutFromStorage();
-        const cleaned = (saved ?? []).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
-        const nodesWithSaved = cleaned.length ? (importLayoutLS(uiNodes, cleaned) as UINode[]) : uiNodes;
+    // Merge con layout guardado localmente (si existe)
+    const saved = loadLayoutFromStorage();
+    const cleaned = (saved ?? []).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    const nodesWithSaved = cleaned.length ? (importLayoutLS(uiNodes, cleaned) as UINode[]) : uiNodes;
 
-        setNodes(nodesWithSaved);
-        setEdges(uiEdges);
-      } catch (err: any) {
-        console.error(err);
-        setError(err?.message || "Error desconocido");
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+    setNodes(nodesWithSaved);
+    setEdges(uiEdges);
+  }, [data]);
 
+  // mapas y viewBox
   const nodesById = useMemo(() => {
     const m: Record<string, UINode> = {};
     for (const n of nodes) {
@@ -571,14 +565,18 @@ export default function App() {
 
   return (
     <div style={{ padding: 0 }}>
-      {loading && <p style={{ margin: 12 }}>Cargando datos…</p>}
-      {error && (
-        <p style={{ color: "#b91c1c", margin: 12 }}>
-          Error cargando datos: <strong>{error}</strong>
-        </p>
-      )}
+      {/* barra liviana de estado de polling */}
+      <div style={{ fontSize: 12, color: "#64748b", padding: "6px 8px" }}>
+        {error ? (
+          <span style={{ color: "#b91c1c" }}>Error: {(error as Error)?.message || "Error desconocido"}</span>
+        ) : isFetching ? (
+          "Actualizando…"
+        ) : (
+          "Sincronizado"
+        )}
+      </div>
 
-      {!loading && !error && (
+      {!error && (
         <div
           ref={wrapRef}
           style={{
@@ -628,8 +626,9 @@ export default function App() {
                   </linearGradient>
                 </defs>
 
-                {/* Fondo */}
-                <rect className="bg-grid" x="0" y="0" width="1000" height="520" />
+                {/* Fondo (blanco + grilla) */}
+                <rect x="0" y="0" width="1000" height="520" fill="#ffffff" />
+                <rect x="0" y="0" width="1000" height="520" fill="url(#grid)" opacity={0.6} />
 
                 {/* Edges */}
                 {edges.map((e, idx) => (
