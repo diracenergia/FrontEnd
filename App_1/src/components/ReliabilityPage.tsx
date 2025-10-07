@@ -1,7 +1,6 @@
 // src/components/ReliabilityPage.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
-import { Button } from "./ui/button";
 import {
   ResponsiveContainer,
   BarChart,
@@ -85,7 +84,7 @@ export default function ReliabilityPage({
     return () => { mounted = false; };
   }, [locationId]);
 
-  // -------------------- Bombas (filas y KPIs) --------------------
+  // -------------------- Bombas --------------------
   const rowsPumps = useMemo(() => {
     const pick = (r: UptimePumpRow) =>
       typeof r.uptime_pct_30d === "number" ? r.uptime_pct_30d :
@@ -122,8 +121,8 @@ export default function ReliabilityPage({
     return { total, ok, risk, avg: avgFromLoc ?? avg, worst, best };
   }, [rowsPumps, rowsPumpsSortedAsc, locRows, thresholdLow]);
 
-  // -------------------- Tanques (filas y KPIs) --------------------
-  // Aproximación: uptime = online ? 100 : 0 (igual que bombas en tu mock actual)
+  // -------------------- Tanques --------------------
+  // Aproximación: uptime = online ? 100 : 0 (mismo criterio que el mock de bombas)
   const rowsTanks = useMemo(() => {
     return (tanks || []).map(t => ({
       id: t.tank_id,
@@ -147,14 +146,14 @@ export default function ReliabilityPage({
     return { total, ok, risk, avg, worst, best };
   }, [rowsTanks, rowsTanksSortedAsc, thresholdLow]);
 
-  // -------------------- Alarmas de tanques (siempre) --------------------
+  // -------------------- Alarmas activas (tanques) --------------------
   const tanksAlarmStats = useMemo(() => {
     const alarmed = (alarms || []).length; // ya vienen filtradas por is_active
     const critical = (alarms || []).filter(a => a.severity === "critical").length;
     return { alarmed, critical };
   }, [alarms]);
 
-  // -------------------- Selección de modo --------------------
+  // -------------------- Modo seleccionado --------------------
   const noun = mode === "pumps" ? "bombas" : "tanques";
   const rowsSortedAsc = mode === "pumps" ? rowsPumpsSortedAsc : rowsTanksSortedAsc;
   const kpis = mode === "pumps" ? kpisPumps : kpisTanks;
@@ -174,24 +173,12 @@ export default function ReliabilityPage({
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-      {/* Toggle Bombas / Tanques */}
-      <div className="xl:col-span-2 flex items-center gap-2">
+      {/* Toggle Bombas / Tanques — pill segmentado */}
+      <div className="xl:col-span-2 flex items-center gap-3">
         <span className="text-sm text-gray-500">Ver:</span>
-        <div className="inline-flex rounded-lg border p-0.5 bg-background">
-          <Button
-            variant={mode === "pumps" ? "default" : "ghost"}
-            size="sm"
-            onClick={() => setMode("pumps")}
-          >
-            Bombas
-          </Button>
-          <Button
-            variant={mode === "tanks" ? "default" : "ghost"}
-            size="sm"
-            onClick={() => setMode("tanks")}
-          >
-            Tanques
-          </Button>
+        <div className="inline-flex items-center gap-1 rounded-xl border bg-muted/50 p-1 shadow-sm">
+          <ModeTab active={mode === "pumps"} onClick={() => setMode("pumps")} label="Bombas" />
+          <ModeTab active={mode === "tanks"} onClick={() => setMode("tanks")} label="Tanques" />
         </div>
       </div>
 
@@ -349,7 +336,7 @@ export default function ReliabilityPage({
   );
 }
 
-/* ---------- Subcomponente de KPI ---------- */
+/* ---------- Subcomponentes ---------- */
 function StatTile({
   title,
   value,
@@ -382,5 +369,32 @@ function StatTile({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function ModeTab({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={[
+        "px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500/40",
+        active
+          ? "bg-background text-foreground shadow-sm"
+          : "text-muted-foreground hover:text-foreground",
+      ].join(" ")}
+    >
+      {label}
+    </button>
   );
 }
