@@ -24,7 +24,7 @@ type AggTimeseries = { timestamps?: string[]; is_on?: number[] };
 /** Horarios EPEN por defecto: Valle 00–07, Pico 19–23 (incluye 23), Resto el resto */
 type TouSchedule = {
   valle: { start: number; end: number }; // [start, end) local
-  pico: { start: number; end: number };  // [start, end)
+  pico:  { start: number; end: number }; // [start, end)
 };
 
 // Por defecto incluyo 23h en Pico usando end=24
@@ -67,32 +67,17 @@ function parseHourAny(s?: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function StatCard({ title, hours, pct, color }: { title: string; hours: number; pct: number; color: string }) {
-  return (
-    <Card className="rounded-2xl">
-      <CardHeader className="pb-2 flex items-center gap-2">
-        <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
-        <CardTitle className="text-sm text-gray-500">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-3xl font-semibold">{hours.toFixed(1)} h</div>
-        <div className="text-sm text-gray-500 mt-1">{pct.toFixed(0)}%</div>
-      </CardContent>
-    </Card>
-  );
-}
-
 // ------------------------------------------------------
 // Componente principal
 // ------------------------------------------------------
 export default function EnergyEfficiencyPage({
   pumpAgg,
   schedule = EPEN_DEFAULT,
-  capacity,     // opcional: total de bombas para escala del perfil
+  capacity,
 }: {
   pumpAgg: AggTimeseries | null | undefined;
   schedule?: TouSchedule;
-  capacity?: number;
+  capacity?: number; // para escalar el perfil horario
 }) {
   const ts = pumpAgg?.timestamps ?? [];
   const vals = pumpAgg?.is_on ?? [];
@@ -127,7 +112,6 @@ export default function EnergyEfficiencyPage({
       }
     }
 
-    // Orden cronológico
     const ordered =
       out.length && typeof out[0].t === "number"
         ? [...out].sort((a, b) => Number(a.t) - Number(b.t))
@@ -149,7 +133,6 @@ export default function EnergyEfficiencyPage({
       { name: "Pico",  key: "pico"  as const, value: Number(stats.pico.hours.toFixed(3))  },
     ];
 
-    // Datos apilados por franja (por punto)
     const stackedData = ordered.map(d => ({
       label: d.tLabel,
       valle: d.band === "valle" ? d.on : 0,
@@ -175,7 +158,7 @@ export default function EnergyEfficiencyPage({
     );
   }
 
-  // Porcentajes para barra apilada mini
+  // Porcentajes para barra apilada
   const pct = {
     valle: stats.total > 0 ? (stats.valle.hours / stats.total) * 100 : 0,
     resto: stats.total > 0 ? (stats.resto.hours / stats.total) * 100 : 0,
@@ -184,44 +167,56 @@ export default function EnergyEfficiencyPage({
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      {/* Resumen 24h */}
+      {/* Resumen 24h (ahora con Valle/Resto/Pico adentro) */}
       <Card className="rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-gray-500">Resumen (24h)</CardTitle>
         </CardHeader>
         <CardContent>
+          {/* KPIs arriba */}
           <div className="grid grid-cols-3 gap-4">
             <div>
               <div className="text-xs text-gray-500">Horas-bomba</div>
-              <div className="text-2xl font-semibold">{stats.total.toFixed(1)} h</div>
+              <div className="text-2xl md:text-3xl font-semibold">{stats.total.toFixed(1)} h</div>
             </div>
             <div>
               <div className="text-xs text-gray-500">Promedio ON</div>
-              <div className="text-2xl font-semibold">{stats.avgOn.toFixed(1)}</div>
+              <div className="text-2xl md:text-3xl font-semibold">{stats.avgOn.toFixed(1)}</div>
             </div>
             <div>
               <div className="text-xs text-gray-500">Pico ON</div>
-              <div className="text-2xl font-semibold">{stats.peak.toFixed(0)}</div>
+              <div className="text-2xl md:text-3xl font-semibold">{stats.peak.toFixed(0)}</div>
             </div>
           </div>
 
           {/* Barra apilada por franja */}
           <div className="mt-4">
-            <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+            <div className="h-2 w-full rounded-full bg-muted overflow-hidden flex">
               <div className="h-2" style={{ width: `${pct.valle}%`, backgroundColor: COLORS.valle }} />
-              <div className="h-2" style={{ width: `${pct.resto}%`, backgroundColor: COLORS.resto, marginTop: -8 }} />
-              <div className="h-2" style={{ width: `${pct.pico}%`,  backgroundColor: COLORS.pico,  marginTop: -8 }} />
+              <div className="h-2" style={{ width: `${pct.resto}%`, backgroundColor: COLORS.resto }} />
+              <div className="h-2" style={{ width: `${pct.pico}%`,  backgroundColor: COLORS.pico  }} />
             </div>
-            <div className="flex gap-3 mt-2 text-xs text-gray-500">
-              <span className="inline-flex items-center gap-1">
-                <i className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: COLORS.valle }} /> Valle {pct.valle.toFixed(0)}%
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <i className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: COLORS.resto }} /> Resto {pct.resto.toFixed(0)}%
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <i className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: COLORS.pico }} /> Pico {pct.pico.toFixed(0)}%
-              </span>
+
+            {/* Chips con horas y % por franja */}
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS.valle }} />
+                <span className="text-gray-700">Valle</span>
+                <span className="ml-auto font-medium">{stats.valle.hours.toFixed(1)} h</span>
+                <span className="text-gray-500">({pct.valle.toFixed(0)}%)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS.resto }} />
+                <span className="text-gray-700">Resto</span>
+                <span className="ml-auto font-medium">{stats.resto.hours.toFixed(1)} h</span>
+                <span className="text-gray-500">({pct.resto.toFixed(0)}%)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS.pico }} />
+                <span className="text-gray-700">Pico</span>
+                <span className="ml-auto font-medium">{stats.pico.hours.toFixed(1)} h</span>
+                <span className="text-gray-500">({pct.pico.toFixed(0)}%)</span>
+              </div>
             </div>
           </div>
         </CardContent>
@@ -273,10 +268,7 @@ export default function EnergyEfficiencyPage({
               <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
               <XAxis dataKey="tLabel" tickMargin={8} minTickGap={24} />
               <YAxis allowDecimals={false} domain={[0, Math.max(yMax, 1)]} width={28} />
-              <Tooltip
-                cursor={{ strokeDasharray: "3 3" }}
-                formatter={(v: any) => [String(v), "Bombas ON"]}
-              />
+              <Tooltip cursor={{ strokeDasharray: "3 3" }} formatter={(v: any) => [String(v), "Bombas ON"]} />
               <Legend />
               <Line type="stepAfter" dataKey="on" name="Bombas ON" stroke="currentColor" strokeWidth={2} dot={false} isAnimationActive={false} />
               {series.length > 24 && <Brush dataKey="tLabel" height={22} stroke="currentColor" travellerWidth={8} />}
@@ -285,7 +277,7 @@ export default function EnergyEfficiencyPage({
         </CardContent>
       </Card>
 
-      {/* Horas por franja (stack apilado por punto) */}
+      {/* Horas por franja (apilado por punto) */}
       <Card className="rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm text-gray-500">Horas por franja (apilado)</CardTitle>
@@ -296,10 +288,7 @@ export default function EnergyEfficiencyPage({
               <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
               <XAxis dataKey="label" tickMargin={8} minTickGap={24} />
               <YAxis allowDecimals={false} width={28} />
-              <Tooltip
-                cursor={{ fillOpacity: 0.05 }}
-                formatter={(v: any, name: any) => [`${v} h`, name]}
-              />
+              <Tooltip cursor={{ fillOpacity: 0.05 }} formatter={(v: any, name: any) => [`${v} h`, name]} />
               <Legend />
               <Bar stackId="a" dataKey="valle" name="Valle" fill={COLORS.valle} isAnimationActive={false} />
               <Bar stackId="a" dataKey="resto" name="Resto" fill={COLORS.resto} isAnimationActive={false} />
@@ -308,13 +297,6 @@ export default function EnergyEfficiencyPage({
           </ResponsiveContainer>
         </CardContent>
       </Card>
-
-      {/* Tarjetas mini por franja */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <StatCard title="Valle" hours={stats.valle.hours} pct={stats.valle.pct} color={COLORS.valle} />
-        <StatCard title="Resto" hours={stats.resto.hours} pct={stats.resto.pct} color={COLORS.resto} />
-        <StatCard title="Pico"  hours={stats.pico.hours}  pct={stats.pico.pct}  color={COLORS.pico} />
-      </div>
     </div>
   );
 }

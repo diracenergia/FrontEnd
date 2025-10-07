@@ -1,6 +1,7 @@
 // src/components/ReliabilityPage.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
+import { Button } from "./ui/button";
 import {
   ResponsiveContainer,
   BarChart,
@@ -20,15 +21,17 @@ import {
   fetchUptime30dByLocation,
   fetchUptime30dByPump,
   fetchActiveAlarms,
+  getTanks,
   type UptimePumpRow,
   type UptimeLocRow,
   type Alarm,
+  type Tank,
 } from "@/api/kpi";
 
 type Props = {
   locationId: number | "all";
   thresholdLow?: number; // % bajo el cual es “riesgo”
-  topN?: number;         // cuántas peores listar
+  topN?: number;         // cuántos peores listar
 };
 
 const COLORS = {
@@ -38,30 +41,41 @@ const COLORS = {
   textMuted: "#6B7280",
 };
 
+type Mode = "pumps" | "tanks";
+
 export default function ReliabilityPage({
   locationId,
   thresholdLow = 90,
   topN = 8,
 }: Props) {
+  const [mode, setMode] = useState<Mode>("pumps");
+
   const [loading, setLoading] = useState(true);
   const [pumps, setPumps] = useState<UptimePumpRow[]>([]);
   const [locRows, setLocRows] = useState<UptimeLocRow[]>([]);
   const [alarms, setAlarms] = useState<Alarm[]>([]);
+  const [tanks, setTanks] = useState<Tank[]>([]);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
       setLoading(true);
       try {
-        const [rowsPump, rowsLoc, alarmsActive] = await Promise.all([
+        const [rowsPump, rowsLoc, alarmsActive, tanksNow] = await Promise.all([
           fetchUptime30dByPump({ location_id: locationId }),
           fetchUptime30dByLocation({ location_id: locationId }),
           fetchActiveAlarms({ location_id: locationId }),
+          getTanks(),
         ]);
         if (!mounted) return;
         setPumps(rowsPump || []);
         setLocRows(rowsLoc || []);
         setAlarms((alarmsActive || []).filter(a => a.is_active));
+        const tanksFiltered =
+          locationId === "all"
+            ? (tanksNow || [])
+            : (tanksNow || []).filter(t => Number(t.location_id ?? -1) === Number(locationId));
+        setTanks(tanksFiltered);
       } catch (e) {
         console.error("[ReliabilityPage] load error", e);
       } finally {
@@ -71,44 +85,33 @@ export default function ReliabilityPage({
     return () => { mounted = false; };
   }, [locationId]);
 
-  // Normalizamos filas { name, uptime, pump_id }
-  const rows = useMemo(() => {
+  // -------------------- Bombas (filas y KPIs) --------------------
+  const rowsPumps = useMemo(() => {
     const pick = (r: UptimePumpRow) =>
       typeof r.uptime_pct_30d === "number" ? r.uptime_pct_30d :
       typeof r.uptime_pct === "number" ? r.uptime_pct : null;
 
     return (pumps || [])
       .map(r => ({
-        pump_id: r.pump_id,
+        id: r.pump_id,
         name: r.name || `pump #${r.pump_id}`,
         uptime: Number(pick(r) ?? 0),
       }))
       .filter(r => Number.isFinite(r.uptime));
   }, [pumps]);
 
-  // Ordenado ascendente (peores primero)
-  const rowsSortedAsc = useMemo(
-    () => [...rows].sort((a, b) => a.uptime - b.uptime),
-    [rows]
+  const rowsPumpsSortedAsc = useMemo(
+    () => [...rowsPumps].sort((a, b) => a.uptime - b.uptime),
+    [rowsPumps]
   );
 
-  // Ancho del eje Y dinámico según largo de nombres
-  const yAxisWidth = useMemo(() => {
-    const maxLen = rowsSortedAsc.reduce((m, r) => Math.max(m, (r.name ?? "").length), 0);
-    return Math.min(220, Math.max(80, Math.round(maxLen * 7.2)));
-  }, [rowsSortedAsc]);
-
-  // KPIs superiores
-  const kpis = useMemo(() => {
-    const total = rows.length;
-    const risk = rows.filter(r => r.uptime < thresholdLow).length;
+  const kpisPumps = useMemo(() => {
+    const total = rowsPumps.length;
+    const risk = rowsPumps.filter(r => r.uptime < thresholdLow).length;
     const ok = total - risk;
-    const avg = rows.length ? rows.reduce((a, b) => a + b.uptime, 0) / rows.length : 0;
-    const worst = rowsSortedAsc[0]?.uptime ?? 0;
-    const best = rowsSortedAsc.length ? rowsSortedAsc[rowsSortedAsc.length - 1].uptime : 0;
-
-    const alarmsActive = alarms.length;
-    const alarmsCritical = alarms.filter(a => a.severity === "critical").length;
+    const avg = rowsPumps.length ? rowsPumps.reduce((a, b) => a + b.uptime, 0) / rowsPumps.length : 0;
+    const worst = rowsPumpsSortedAsc[0]?.uptime ?? 0;
+    const best = rowsPumpsSortedAsc.length ? rowsPumpsSortedAsc[rowsPumpsSortedAsc.length - 1].uptime : 0;
 
     // Si el backend da uptimes por ubicación, usamos su promedio
     const avgLoc = (locRows || [])
@@ -116,40 +119,98 @@ export default function ReliabilityPage({
       .filter(Number.isFinite);
     const avgFromLoc = avgLoc.length ? (avgLoc.reduce((a, b) => a + b, 0) / avgLoc.length) : null;
 
-    return { total, ok, risk, avg: avgFromLoc ?? avg, worst, best, alarmsActive, alarmsCritical };
-  }, [rows, rowsSortedAsc, alarms, locRows, thresholdLow]);
+    return { total, ok, risk, avg: avgFromLoc ?? avg, worst, best };
+  }, [rowsPumps, rowsPumpsSortedAsc, locRows, thresholdLow]);
+
+  // -------------------- Tanques (filas y KPIs) --------------------
+  // Aproximación: uptime = online ? 100 : 0 (igual que bombas en tu mock actual)
+  const rowsTanks = useMemo(() => {
+    return (tanks || []).map(t => ({
+      id: t.tank_id,
+      name: t.name ?? `tank #${t.tank_id}`,
+      uptime: t.online ? 100 : 0,
+    }));
+  }, [tanks]);
+
+  const rowsTanksSortedAsc = useMemo(
+    () => [...rowsTanks].sort((a, b) => a.uptime - b.uptime),
+    [rowsTanks]
+  );
+
+  const kpisTanks = useMemo(() => {
+    const total = rowsTanks.length;
+    const risk = rowsTanks.filter(r => r.uptime < thresholdLow).length;
+    const ok = total - risk;
+    const avg = rowsTanks.length ? rowsTanks.reduce((a, b) => a + b.uptime, 0) / rowsTanks.length : 0;
+    const worst = rowsTanksSortedAsc[0]?.uptime ?? 0;
+    const best = rowsTanksSortedAsc.length ? rowsTanksSortedAsc[rowsTanksSortedAsc.length - 1].uptime : 0;
+    return { total, ok, risk, avg, worst, best };
+  }, [rowsTanks, rowsTanksSortedAsc, thresholdLow]);
+
+  // -------------------- Alarmas de tanques (siempre) --------------------
+  const tanksAlarmStats = useMemo(() => {
+    const alarmed = (alarms || []).length; // ya vienen filtradas por is_active
+    const critical = (alarms || []).filter(a => a.severity === "critical").length;
+    return { alarmed, critical };
+  }, [alarms]);
+
+  // -------------------- Selección de modo --------------------
+  const noun = mode === "pumps" ? "bombas" : "tanques";
+  const rowsSortedAsc = mode === "pumps" ? rowsPumpsSortedAsc : rowsTanksSortedAsc;
+  const kpis = mode === "pumps" ? kpisPumps : kpisTanks;
 
   const donutData = useMemo(() => ([
     { name: "OK", value: kpis.ok, key: "ok" as const, color: COLORS.ok },
     { name: "En riesgo", value: kpis.risk, key: "risk" as const, color: COLORS.risk },
   ]), [kpis.ok, kpis.risk]);
 
-  const worstList = useMemo(() => rowsSortedAsc.slice(0, topN), [rowsSortedAsc, topN]);
+  const yAxisWidth = useMemo(() => {
+    const maxLen = rowsSortedAsc.reduce((m, r) => Math.max(m, (r.name ?? "").length), 0);
+    return Math.min(220, Math.max(80, Math.round(maxLen * 7.2)));
+  }, [rowsSortedAsc]);
+
   const barColorFor = (uptime: number) => uptime < thresholdLow ? COLORS.risk : COLORS.ok;
   const fmtPct = (n: number) => `${n.toFixed(1)}%`;
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-      {/* KPIs en 2 columnas x 2 filas (sin huecos) */}
+      {/* Toggle Bombas / Tanques */}
+      <div className="xl:col-span-2 flex items-center gap-2">
+        <span className="text-sm text-gray-500">Ver:</span>
+        <div className="inline-flex rounded-lg border p-0.5 bg-background">
+          <Button
+            variant={mode === "pumps" ? "default" : "ghost"}
+            size="sm"
+            onClick={() => setMode("pumps")}
+          >
+            Bombas
+          </Button>
+          <Button
+            variant={mode === "tanks" ? "default" : "ghost"}
+            size="sm"
+            onClick={() => setMode("tanks")}
+          >
+            Tanques
+          </Button>
+        </div>
+      </div>
+
+      {/* KPIs 2×2 (sin huecos) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <StatTile title={`Uptime promedio (30d — ${noun})`} value={fmtPct(kpis.avg)} accent="#111827" />
         <StatTile
-          title="Uptime promedio (30d)"
-          value={fmtPct(kpis.avg)}
-          accent="#111827"
-        />
-        <StatTile
-          title="Bombas en riesgo"
+          title={`${mode === "pumps" ? "Bombas" : "Tanques"} en riesgo`}
           value={`${kpis.risk}`}
           subtitle={`umbral < ${thresholdLow}%`}
           accent={kpis.risk > 0 ? COLORS.risk : COLORS.ok}
           valueColor={kpis.risk > 0 ? COLORS.risk : COLORS.ok}
         />
         <StatTile
-          title="Alarmas activas"
-          value={`${kpis.alarmsActive}`}
-          subtitle={kpis.alarmsCritical > 0 ? `críticas: ${kpis.alarmsCritical}` : undefined}
-          accent={kpis.alarmsCritical > 0 ? COLORS.critical : COLORS.textMuted}
-          subtitleColor={kpis.alarmsCritical > 0 ? COLORS.critical : COLORS.textMuted}
+          title="Alarmas activas (tanques)"
+          value={`${tanksAlarmStats.alarmed}`}
+          subtitle={tanksAlarmStats.critical > 0 ? `críticas: ${tanksAlarmStats.critical}` : undefined}
+          accent={tanksAlarmStats.critical > 0 ? COLORS.critical : COLORS.textMuted}
+          subtitleColor={tanksAlarmStats.critical > 0 ? COLORS.critical : COLORS.textMuted}
         />
         <Card className="rounded-2xl min-h-[120px]">
           <CardHeader className="pb-1">
@@ -177,10 +238,10 @@ export default function ReliabilityPage({
       {/* Donut OK vs En riesgo */}
       <Card className="rounded-2xl">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm text-gray-500">Estado de bombas</CardTitle>
+          <CardTitle className="text-sm text-gray-500">Estado de {noun}</CardTitle>
         </CardHeader>
         <CardContent className="h-64">
-          {rows.length === 0 ? (
+          {rowsSortedAsc.length === 0 ? (
             <div className="h-full grid place-items-center text-sm text-gray-500">Sin datos</div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -212,10 +273,12 @@ export default function ReliabilityPage({
           {/* Gráfico */}
           <Card className="rounded-2xl xl:col-span-2">
             <CardHeader className="pb-2 flex items-center justify-between">
-              <CardTitle className="text-sm text-gray-500">Uptime por bomba (30d aprox.)</CardTitle>
+              <CardTitle className="text-sm text-gray-500">
+                Uptime por {mode === "pumps" ? "bomba" : "tanque"} (30d aprox.)
+              </CardTitle>
             </CardHeader>
             <CardContent className="h-96">
-              {rows.length === 0 ? (
+              {rowsSortedAsc.length === 0 ? (
                 <div className="h-full grid place-items-center text-sm text-gray-500">Sin datos</div>
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
@@ -256,18 +319,20 @@ export default function ReliabilityPage({
             </CardContent>
           </Card>
 
-          {/* Lista de peores */}
+          {/* Lista peores */}
           <Card className="rounded-2xl">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm text-gray-500">Peores {topN} bombas</CardTitle>
+              <CardTitle className="text-sm text-gray-500">
+                Peores {topN} {noun}
+              </CardTitle>
             </CardHeader>
             <CardContent>
-              {worstList.length === 0 ? (
+              {rowsSortedAsc.length === 0 ? (
                 <div className="text-sm text-gray-500">Sin datos</div>
               ) : (
                 <ul className="text-sm divide-y">
-                  {worstList.map((r) => (
-                    <li key={r.pump_id} className="py-2 flex items-center justify-between">
+                  {rowsSortedAsc.slice(0, topN).map((r) => (
+                    <li key={r.id} className="py-2 flex items-center justify-between">
                       <span className="truncate">{r.name}</span>
                       <span className="font-semibold" style={{ color: barColorFor(r.uptime) }}>
                         {r.uptime.toFixed(1)}%
@@ -284,7 +349,7 @@ export default function ReliabilityPage({
   );
 }
 
-/* ---------- Subcomponentes ---------- */
+/* ---------- Subcomponente de KPI ---------- */
 function StatTile({
   title,
   value,
@@ -296,9 +361,9 @@ function StatTile({
   title: string;
   value: string;
   subtitle?: string;
-  accent?: string;           // color de barra lateral
-  valueColor?: string;       // color del número
-  subtitleColor?: string;    // color del subtítulo
+  accent?: string;
+  valueColor?: string;
+  subtitleColor?: string;
 }) {
   return (
     <Card className="rounded-2xl min-h-[120px]">
